@@ -41,7 +41,7 @@ def convert_rgbd_to_pointcloud(rgb, depth, intrinsic_matrix, extrinsic=None):
 if __name__ == "__main__":
     # 1. Load your RGB and Depth images
     # Replace with the actual paths to your images
-    path_to_rgb = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\2.png"
+    path_to_rgb = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\2trid.png"
     path_to_depth = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\2depthmap.png"
 
     try:
@@ -58,16 +58,19 @@ if __name__ == "__main__":
     if depth_image_raw is None:
         print(f"Failed to load depth image from: {path_to_depth}. Check path and file.")
         exit()
-
   # --- New, more robust depth image shape handling ---
     processed_depth_image = None
+
+
     if len(depth_image_raw.shape) == 2:
         # This is already a 2D grayscale depth image, perfect.
         print(f"Depth image is 2D. Shape: {depth_image_raw.shape}")
         processed_depth_image = depth_image_raw
     elif len(depth_image_raw.shape) == 3:
         num_channels = depth_image_raw.shape[2]
-        if num_channels == 1: # Should have been caught by len(shape)==2, but good to be explicit
+        print(f"DEBUG: Depth image has 3 dimensions. num_channels = {num_channels}") # Another debug print
+
+        if num_channels == 1: 
             print(f"Depth image has 3 dimensions but only 1 channel. Taking the single channel. Shape: {depth_image_raw.shape}")
             processed_depth_image = depth_image_raw[:, :, 0]
         elif num_channels == 3:
@@ -77,25 +80,19 @@ if __name__ == "__main__":
                 print("Depth image loaded with 3 identical channels. Taking the first channel as depth.")
                 processed_depth_image = depth_image_raw[:,:,0] # Take the first channel
             else:
-                # It's a 3-channel color image. This is usually not a direct depth map.
-                print(f"Error: Depth image loaded as a 3-channel color image with shape: {depth_image_raw.shape}. Expected a single channel depth map or 3 identical channels.")
+                # This is the error you are seeing.
+                print(f"Error: Depth image loaded as a 3-channel color image (channels are different) with shape: {depth_image_raw.shape}. Expected a single channel depth map or 3 identical channels.")
                 exit()
-        elif num_channels == 4:
-            # This is a 4-channel image (e.g., RGBA).
-            # YOU NEED TO DETERMINE WHICH CHANNEL CONTAINS THE ACTUAL DEPTH DATA.
-            # Common options:
-            # 1. The first channel (index 0) contains depth.
-            # 2. The alpha channel (index 3) might be irrelevant, and one of R,G,B is depth.
-            # For now, let's make an assumption and print a warning.
+        elif num_channels == 4: # This block should handle your case
+            print(f"DEBUG: Entering num_channels == 4 block.")
             print(f"Warning: Depth image loaded with 4 channels (shape: {depth_image_raw.shape}).")
             print("         Assuming depth information is in the FIRST channel (index 0).")
             print("         Please verify this assumption for your specific depth image format.")
             processed_depth_image = depth_image_raw[:,:,0] # Taking the first channel as depth
-            # If you know depth is in another channel, change the index, e.g., depth_image_raw[:,:,X]
-        else:
-            print(f"Error: Depth image loaded with an unexpected number of channels: {num_channels} in shape: {depth_image_raw.shape}.")
+        else: # This handles cases like 2 or 5+ channels for a 3-dimensionally shaped array
+            print(f"Error: Depth image (3D shape) loaded with an unexpected number of channels: {num_channels} in shape: {depth_image_raw.shape}.")
             exit()
-    else:
+    else: # This handles cases where shape is not 2D or 3D (e.g. 1D, 4D+)
         print(f"Error: Depth image has an unexpected number of dimensions: {len(depth_image_raw.shape)}. Shape: {depth_image_raw.shape}.")
         exit()
 
