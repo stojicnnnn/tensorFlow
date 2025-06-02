@@ -1,275 +1,190 @@
-#importing all the needed libraries for zivid camera, point cloud processing and general python 
-import zivid
-import numpy as np
 import open3d as o3d
-import os
-from datetime import datetime
+import numpy as np
+import cv2 # For loading images (pip install opencv-python)
+import os # For os.path.exists if you use it, though not in current snippet
+import copy 
 
-#function for capturing point clouds from zivid camera
-def capture_point_cloud_from_zivid(
-    settings_file_path=None, output_zdf_path=None, output_ply_path=None
-):
-    
-    #Arguments:
-    #    settings_file_path (str, optional): Path to a .yml camera settings file.  If None, default or last-used settings might be applied.
-    #  output_zdf_path (str, optional): If provided, saves the raw Zivid frame to this .zdf file path.
-    #  output_ply_path (str, optional): If provided, saves the point cloud to this .ply file path.
-
-    #Returns:
-    #    open3d.geometry.PointCloud: The captured point cloud as an Open3D object.Returns None if capture fails.
-    
-    app = None #default
-    try: 
-        print("Init Zivid app")
-        app = zivid.Application() #Creates a instance of zivid app,needed for everything related to zivid SDK
-        #cleaned at the end of the function
-
-        print("Connecting to camera")
-        camera = app.connect_camera() #Attempting to connect to camera
-
-        if not camera: #Maybe not needed since if camera is not found error will occur and trigger exception block
-            print("Error: Could not connect to camera.")
-            return None
-
-        print(f"Connected to camera: {camera.info.serial_number}")  
-
-        # Acquisition settings
-        if settings_file_path:
-            if os.path.exists(settings_file_path):
-                print(f"Loading settings from: {settings_file_path}")
-                camera_settings = zivid.Settings.load(settings_file_path)
-                #Checks if we provided path to .yml file
-                #.yml file usually contains camera settings from Zivid studio
-                
-            else:
-                print(f"Warning: Settings file not found at {settings_file_path}. Using default/current settings.")
-                # Create a default settings object if needed for a single capture
-                camera_settings = zivid.Settings(acquisitions=[zivid.Settings.Acquisition()])
-        else:
-            print("No settings file provided. Using default/current camera settings.")
-            # Create a default settings object for a single capture
-            # To do: make a better default settings !!!                                                                                              TO DO
-            camera_settings = zivid.Settings(acquisitions=[zivid.Settings.Acquisition()])
-            # Example: Adjusting exposure time for the first acquisition
-            # if camera_settings.acquisitions:
-            #     camera_settings.acquisitions[0].exposure_time = datetime.timedelta(microseconds=20000)
-
-
-        print("Capturing frame...")
-        with camera.capture(camera_settings) as frame: #tells the camera to capture an image, using camera_settings we set up earlier
-            # "as frame" stores the captured data in the frame variable
-            print("Frame captured.")
-
-            if output_zdf_path:
-                print(f"Saving frame to Zivid Data File (ZDF): {output_zdf_path}")
-                frame.save(output_zdf_path)
-                print(f"Frame saved to {output_zdf_path}")
-                # saves full raw capture including point cloud,snr,color,depth
-
-            print("Extracting point cloud data (XYZ)...")
-            point_cloud_xyz = frame.point_cloud().copy_data("xyz") # from the object frame which holds multiple formats, gets 3d coords,xyz
-            #stores it into numpy array point_cloud_xyz
-            #organized point cloud, TO DO: explore more about different point cloud formats                                                         TO DO
-            point_cloud_rgba = frame.point_cloud().copy_data("rgba") # Get color data   
-
-            # Zivid point clouds are organized (height x width x 3/4).
-            # For Open3D, we often need a flat list of points (N x 3), where N is total number of points.
-            points = point_cloud_xyz.reshape(-1, 3)
-            # 'reshape(-1, 3)' changes the shape of the 'point_cloud_xyz' array.
-            # The '-1' tells NumPy to automatically calculate the number of rows
-            # needed to make it have 3 columns (for X, Y, Z).
-            # So, if you had 100x100 points, this becomes a 10000x3 array.
-            
-            # Extract colors (RGB) 0-255 in Zivid and normalize to [0,1] for Open3D
-            # RGBA is (height x width x 4)
-            colors_rgba = point_cloud_rgba.reshape(-1, 4)
-            colors_rgb = colors_rgba[:, :3] / 255.0  # Take RGB, normalize
-
-            valid_indices = ~np.isnan(points).any(axis=1)
-            points_valid = points[valid_indices]
-            colors_valid = colors_rgb[valid_indices]
-
-            # 'np.isnan(points)' creates a boolean array: True where a coordinate is NaN, False otherwise.
-            # '.any(axis=1)' checks across each row (axis=1, i.e., for each point's X,Y,Z). 
-            #  If ANY coordinate in a point is NaN, it returns True for that point.
-            # '~' is the bitwise NOT operator, used here to invert the boolean values.
-            # So, 'valid_indices' is True for points where ALL coordinates are valid numbers, and False otherwise.
-
-            if points_valid.shape[0] == 0:
-                print("Warning: No valid points found in the point cloud.")
-                return None
-
-            print(f"Number of valid points: {points_valid.shape[0]}")
-
-            # Create Open3D point cloud object
-            o3d_point_cloud = o3d.geometry.PointCloud() # Creates an empty open3d pointcloud object
-            o3d_point_cloud.points = o3d.utility.Vector3dVector(points_valid) 
-            # Converts NumPy array of valid point into the specific C++ vector format Open3D uses internally for points.
-            o3d_point_cloud.colors = o3d.utility.Vector3dVector(colors_valid)
-            # Same for color data
-
-            if output_ply_path:
-                print(f"Saving point cloud to PLY: {output_ply_path}")
-                o3d.io.write_point_cloud(output_ply_path, o3d_point_cloud)
-                print(f"Point cloud saved to {output_ply_path}")
-                # This saves the 'o3d_point_cloud' object to a .ply file.
-                # PLY is a common, simple format for 3D data, widely supported.
-
-            return o3d_point_cloud
-
-    except RuntimeError as e:
-        # If a 'RuntimeError' occurs in the 'try' block (e.g., camera not found, capture fails),
-        # this 'except' block will catch it. 'e' will hold the error object.
-        print(f"Zivid Runtime Error: {e}")
-        return None # Return None indicating failure.
-    except Exception as e:
-        # This is a more general error handler. 'Exception' catches almost any type of error
-        # that wasn't caught by more specific 'except' blocks above it.
-        print(f"An unexpected error occurred: {e}")
-        return None # Return None indicating failure.
-    finally:
-        # The 'finally' block contains code that will *always* run,
-        # whether the 'try' block succeeded, or an error occurred and was caught by 'except'.
-        # It's often used for cleanup actions.
-        # In this script, the Zivid 'app' object is created locally within the function.
-        # When the function exits, 'app' will be automatically cleaned up by Python's garbage collector.
-        # If 'app' were a more persistent object (e.g., part of a class), you might do explicit
-        # disconnection or cleanup here. For now, this print statement just signals completion.
-        print("Camera capture function finished.")
-
-
-def load_point_cloud_from_file(file_path):
-   
-    if not os.path.exists(file_path):
-        print(f"Error: File not found at {file_path}")
+# --- Main part: How to prepare inputs and call the function ---
+def convert_rgbd_to_pointcloud(rgb, depth, intrinsic_matrix, extrinsic=None):
+    if rgb is None or depth is None:
+        print("RGB or depth image is None")
         return None
+
+    if rgb.shape[:2] != depth.shape[:2]:
+        print(f"RGB shape {rgb.shape[:2]} and depth shape {depth.shape[:2]} have different sizes")
+        return None
+
+    rgb_converted_to_rgb_format = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
+
+    o3d_color_image = o3d.geometry.Image(rgb_converted_to_rgb_format)
+    o3d_depth_image = o3d.geometry.Image(depth) 
+
+    rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
+        o3d_color_image,
+        o3d_depth_image,
+        convert_rgb_to_intensity=False, 
+        depth_scale=1.0, 
+        depth_trunc=1000.0, 
+    )
+
+    if not isinstance(intrinsic_matrix, o3d.camera.PinholeCameraIntrinsic):
+        print("Error: intrinsic_matrix must be an o3d.camera.PinholeCameraIntrinsic object.")
+        return None
+
+    point_cloud = o3d.geometry.PointCloud.create_from_rgbd_image(
+        rgbd_image, intrinsic_matrix, extrinsic 
+    )
+    return point_cloud
+
+if __name__ == "__main__":
+    # 1. Load your RGB and Depth images
+    # path_to_rgb should be your MODIFIED RGB image (with blacked-out parts)
+    path_to_rgb = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\2.png" # CHANGE TO YOUR MODIFIED RGB
+    path_to_depth = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\2depthmap.png" # ORIGINAL, UNMODIFIED DEPTH MAP
 
     try:
-        print(f"Loading point cloud from: {file_path}")
-        o3d_point_cloud = o3d.io.read_point_cloud(file_path)
-        if not o3d_point_cloud.has_points():
-            print(f"Warning: No points found in the loaded file: {file_path}")
-            return None # Or return empty point cloud based on desired behavior
-        print(f"Point cloud loaded successfully. Number of points: {len(o3d_point_cloud.points)}")
-        return o3d_point_cloud
+        rgb_image_modified_bgr_prev = cv2.imread(path_to_rgb, cv2.IMREAD_COLOR)
+        depth_image_raw = cv2.imread(path_to_depth, cv2.IMREAD_UNCHANGED)
     except Exception as e:
-        print(f"Error loading point cloud from file: {e}")
-        return None
+        print(f"Error loading images: {e}")
+        exit()
 
-if __name__ == "__main__": 
+    if rgb_image_modified_bgr_prev is None:
+        print(f"Failed to load MODIFIED RGB image from: {path_to_rgb}. Check path and file.")
+        exit()
+    if depth_image_raw is None:
+        print(f"Failed to load ORIGINAL depth image from: {path_to_depth}. Check path and file.")
+        exit()
 
+    print(f"DEBUG: Shape of MODIFIED rgb_image_bgr: {rgb_image_modified_bgr_prev.shape}, dtype: {rgb_image_modified_bgr_prev.dtype}")
+    print(f"DEBUG: Shape of depth_image_raw just before checks: {depth_image_raw.shape}, dtype: {depth_image_raw.dtype}")
+    rgb_image_modified_bgr = cv2.resize(
+        rgb_image_modified_bgr_prev, 
+        (1224, 1024), 
+        interpolation=cv2.INTER_AREA # INTER_AREA is good for downscaling
+    )
+    print(f"DEBUG: Shape of MODIFIED rgb AFTER RESIZE!!: {rgb_image_modified_bgr.shape}, dtype: {rgb_image_modified_bgr.dtype}")
+    print(f"DEBUG: Shape of depth_image_raw just before checks: {depth_image_raw.shape}, dtype: {depth_image_raw.dtype}")
 
-    # --- Example Usage ---
-
-    # --- Option 1: Capture from Zivid Camera ---
-    # Note: This requires a Zivid camera to be connected and SDK properly installed.
+    # --- Process original depth image shape (as before) ---
+    processed_depth_image_original = None # This will be the full depth map initially
+    # (Insert your robust depth image shape handling block here to get processed_depth_image_original as a 2D array)
+    # For brevity, I'll assume it's done and results in 'processed_depth_image_original'
+    # For example, if it was 4-channel:
+    if len(depth_image_raw.shape) == 3 and depth_image_raw.shape[2] == 4:
+        print("Assuming first channel of 4-channel raw depth is depth data.")
+        processed_depth_image_original = depth_image_raw[:,:,0]
+    elif len(depth_image_raw.shape) == 2:
+        processed_depth_image_original = depth_image_raw
+    else:
+        print("Error: Original depth image not 2D or expected 4-channel. Please fix shape handling.")
+        exit()
     
-    # Define a path for camera settings (optional, create a .yml file with Zivid Studio)
-    # example_settings_file = "path/to/your/camera_settings.yml" 
-    example_settings_file = None # Set to None to use default/current settings
+    if processed_depth_image_original is None or len(processed_depth_image_original.shape) != 2:
+        print("Error: processed_depth_image_original is not a 2D array.")
+        exit()
+    print(f"DEBUG: processed_depth_image_original shape: {processed_depth_image_original.shape}")
 
-    # Timestamp to avoid overwriting files during tests.
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    zdf_output = f"zivid_capture_{timestamp}.zdf"
-    ply_output_live = f"zivid_capture_{timestamp}.ply"
+    # --- Create a mask from your MODIFIED RGB image ---
+    # Pixels are considered "object" if they are not pure black (0,0,0).
+    # You might need to adjust the threshold slightly if Paint doesn't save perfect black.
+    if len(rgb_image_modified_bgr.shape) == 3:
+        # Summing channels: if sum > a small threshold, it's not black.
+        # A more robust way for "not black" might be to check if any channel value > threshold
+        object_mask_from_rgb = np.any(rgb_image_modified_bgr > 10, axis=2) # True for non-black pixels
+    else: # Assuming grayscale modified image if not 3 channels
+        object_mask_from_rgb = rgb_image_modified_bgr > 10
+    print(f"DEBUG: object_mask_from_rgb shape: {object_mask_from_rgb.shape}")
 
-    print("\n--- Attempting to capture from Zivid camera ---")
-    # live_pcd = capture_point_cloud_from_zivid(
-    #     settings_file_path=example_settings_file,
-    #     output_zdf_path=zdf_output,
-    #     output_ply_path=ply_output_live
-    # )
-
-    # if live_pcd:
-    #     print("Successfully captured point cloud from Zivid camera.")
-    #     print(f"Number of points in live_pcd: {len(live_pcd.points)}")
-    #     # You can now visualize or process live_pcd
-    #     # o3d.visualization.draw_geometries([live_pcd])
-    # else:
-    #     print("Failed to capture point cloud from Zivid camera.")
-    print("Camera capture example commented out. Uncomment to run if a camera is connected.")
-
-    # --- Option 2: Load from a PLY file ---
-    # First, ensure you have a .ply file. If you ran the capture above,
-    # 'ply_output_live' would be a candidate.
-    # For testing, let's assume you have a file named "test_cloud.ply"
-    # You might need to create a dummy PLY file or use one from a previous capture.
-
-    # Create a dummy PLY file for testing if you don't have one
-    # This is just for the example to run without a camera.
-    # In a real scenario, you'd use a PLY file from a Zivid capture or other source.
-    dummy_ply_file_path = "dummy_test_cloud.ply"
-    if not os.path.exists(dummy_ply_file_path):
-        print(f"\nCreating a dummy PLY file for testing: {dummy_ply_file_path}")
-        # Create a simple cube point cloud
-        dummy_points = np.array([
-            [0,0,0], [1,0,0], [0,1,0], [1,1,0],
-            [0,0,1], [1,0,1], [0,1,1], [1,1,1]
-        ])
-        dummy_colors = np.array([ # RGB, normalized
-            [1,0,0], [0,1,0], [0,0,1], [1,1,0],
-            [1,0,1], [0,1,1], [0.5,0.5,0.5], [0,0,0]
-        ])
-        temp_pcd = o3d.geometry.PointCloud()
-        temp_pcd.points = o3d.utility.Vector3dVector(dummy_points)
-        temp_pcd.colors = o3d.utility.Vector3dVector(dummy_colors)
-        o3d.io.write_point_cloud(dummy_ply_file_path, temp_pcd)
-        print(f"Dummy PLY file created: {dummy_ply_file_path}")
+    # Ensure the mask and depth image have the same H, W dimensions before masking
+    if object_mask_from_rgb.shape != processed_depth_image_original.shape:
+        print(f"Warning: Mask shape {object_mask_from_rgb.shape} and original depth shape {processed_depth_image_original.shape} differ.")
+        print("         Attempting to resize mask to depth image dimensions. Verify results.")
+        # Resize mask to match depth image dimensions.
+        # cv2.resize expects (width, height)
+        object_mask_from_rgb_resized = cv2.resize(
+            object_mask_from_rgb.astype(np.uint8) * 255, # Convert boolean to uint8 for resize
+            (processed_depth_image_original.shape[1], processed_depth_image_original.shape[0]),
+            interpolation=cv2.INTER_NEAREST # Use nearest neighbor to keep it binary
+        ).astype(bool) # Convert back to boolean
+        if object_mask_from_rgb_resized.shape != processed_depth_image_original.shape:
+            print("Error: Mask resize failed to match depth dimensions. Exiting.")
+            exit()
+        object_mask_to_apply = object_mask_from_rgb_resized
+    else:
+        object_mask_to_apply = object_mask_from_rgb
+    print(f"DEBUG: object_mask_to_apply shape: {object_mask_to_apply.shape}")
 
 
-    print("\n--- Attempting to load point cloud from file ---")
-    # Replace 'dummy_test_cloud.ply' with the path to your actual .ply file
-    # For example, if you successfully ran the capture part:
-    # loaded_pcd = load_point_cloud_from_file(ply_output_live) 
+    # --- Apply the mask to the depth image ---
+    # Create a copy of the original processed depth to modify
+    depth_image_masked = processed_depth_image_original.copy()
+    # Where the RGB mask says it's background (False), set depth to 0
+    depth_image_masked[~object_mask_to_apply] = 0 
+    print(f"DEBUG: Applied RGB mask to depth image. Non-zero depth values: {np.count_nonzero(depth_image_masked)}")
+
+    depth_image_final_for_scaling = depth_image_masked # Use this for scaling
+
+    # Now use 'depth_image_final_for_scaling' for the rest of the processing
+    image_height, image_width = depth_image_final_for_scaling.shape[:2]
+    print(f"DEBUG: image_height={image_height}, image_width={image_width} (from masked depth)")
+
+    # 2. Define Camera Intrinsics (CRITICAL: Use YOUR camera's actual values)
+    print("DEBUG: Defining camera intrinsics...")
+    fx = 525.0  # Focal length x (in pixels) - REPLACE
+    fy = 525.0  # Focal length y (in pixels) - REPLACE
+    cx = image_width / 2.0   # Principal point x 
+    cy = image_height / 2.0  # Principal point y 
+
+    camera_intrinsics = o3d.camera.PinholeCameraIntrinsic(
+        int(image_width), int(image_height), fx, fy, cx, cy
+    )
+    print(f"DEBUG: Camera intrinsics defined: \n{camera_intrinsics.intrinsic_matrix}")
+
+    # 3. Prepare Depth Data (Scaling to Meters if necessary)
+    print("DEBUG: Preparing depth data for scaling...")
+    depth_values_are_in_millimeters = True # SET THIS ACCORDING TO YOUR DEPTH IMAGE UNITS
     
-    loaded_pcd = load_point_cloud_from_file(dummy_ply_file_path)
+    if depth_image_final_for_scaling.dtype != np.float32:
+        depth_for_o3d = depth_image_final_for_scaling.astype(np.float32)
+    else:
+        depth_for_o3d = depth_image_final_for_scaling
 
-   # ... (loading part remains the same up to the 'if loaded_pcd:' check) ...
-    if loaded_pcd and loaded_pcd.has_points(): # Ensure pcd is not None and has points
-        print("Successfully loaded point cloud from file.")
-        print(f"Number of points in loaded_pcd: {len(loaded_pcd.points)}")
-        
-        print("Visualizing loaded point cloud using o3d.visualization.Visualizer...")
-        vis = o3d.visualization.Visualizer()
-        try:
-            vis.create_window(window_name="Loaded Point Cloud - Visualizer", width=800, height=600)
-            
-            # Add the geometry to the visualizer
-            vis.add_geometry(loaded_pcd)
-            
-            # Get rendering options
-            render_option = vis.get_render_option()
-            
-            # Increase point size (default is often 1.0 which can be tiny)
-            render_option.point_size = 25.0 
-            
-            # Optionally set a background color (e.g., light grey)
-            # Default is a shade of grey, but being explicit can help.
-            render_option.background_color = np.asarray([0.8, 0.8, 0.8]) 
+    if depth_values_are_in_millimeters:
+        depth_image_scaled_to_meters = depth_for_o3d / 1000.0
+    else:
+        depth_image_scaled_to_meters = depth_for_o3d
+    print(f"DEBUG: Masked depth image scaled. Min: {np.min(depth_image_scaled_to_meters)}, Max: {np.max(depth_image_scaled_to_meters)}")
+    
+    # 4. Define Camera Extrinsics (Optional)
+    extrinsic_matrix = np.identity(4)
+    print("DEBUG: Extrinsic matrix defined (identity).")
 
-            # Attempt to reset the view to frame the geometry automatically
-            # This is usually quite effective.
-            vis.reset_view_point(True)
+    # 5. Call your function
+    print("DEBUG: Calling convert_rgbd_to_pointcloud function...")
+    # Use your MODIFIED RGB image and the MASKED (and scaled) depth image
+    pcd = convert_rgbd_to_pointcloud(
+        rgb_image_modified_bgr, 
+        depth_image_scaled_to_meters,
+        camera_intrinsics,
+        extrinsic_matrix
+    )
+    print("DEBUG: Returned from convert_rgbd_to_pointcloud function.")
 
-            # --- For more manual control if reset_view_point isn't sufficient (optional) ---
-            # view_control = vis.get_view_control()
-            # print("Setting manual view control parameters (example values)...")
-            # For the dummy cube (0,0,0) to (1,1,1):
-            # view_control.set_front([-0.5, -0.5, -1])  # Direction camera is pointing
-            # view_control.set_lookat([0.5, 0.5, 0.5]) # Point camera is looking at (center of cube)
-            # view_control.set_up([0, 1, 0])          # Orientation of 'up'
-            # view_control.set_zoom(0.8)              # Zoom level
-
-            print("Starting visualizer. Close the window to continue script.")
-            vis.run()
+    # 6. Use the resulting point cloud
+    print("DEBUG: Checking the generated point cloud 'pcd' object...")
+    # (Insert the detailed pcd checking and visualization block from previous response here)
+    if pcd is not None:
+        print(f"  DEBUG: 'pcd' object is not None. Type: {type(pcd)}")
+        if pcd.has_points():
+            num_points = len(pcd.points)
+            print(f"  Successfully generated point cloud with {num_points} points.")
+            # ... (rest of the print and visualization code)
+            output_filename_ply = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\ref_sample.ply"
+            o3d.io.write_point_cloud(output_filename_ply, pcd , write_ascii=False)
+            o3d.visualization.draw_geometries([pcd], window_name="Segmented Point Cloud from RGB-D")
             
-        except Exception as e:
-            print(f"Error during visualization: {e}")
-        finally:
-            if 'vis' in locals() and vis: # Ensure vis was created
-                vis.destroy_window()
-            
-    elif loaded_pcd is None: # Explicitly check if loading failed
-        print(f"Failed to load point cloud from {dummy_ply_file_path}.")
-    else: # Loaded but has no points
-        print(f"Point cloud loaded from {dummy_ply_file_path} but contains no points.")
+        else:
+            print("  'pcd' object was generated BUT HAS NO POINTS.")
+    else:
+        print("  'pcd' object is None.")
