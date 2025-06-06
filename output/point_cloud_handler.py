@@ -135,7 +135,62 @@ def rotation_matrix_to_rpy(matrix: np.ndarray) -> np.ndarray:
         print(f"Problematic matrix:\n{matrix}")
         return np.array([0.0, 0.0, 0.0]) # Default on error
 
+def filter_duplicate_waypoints(waypoints: List[np.ndarray], min_distance: float) -> List[np.ndarray]:
+    """
+    Filters a list of waypoints to remove duplicates based on proximity.
 
+    Args:
+        waypoints: A list of generated waypoints, where each waypoint is a NumPy array [x,y,z,r,p,y].
+        min_distance: The minimum distance (in meters) between two waypoints to be considered unique.
+
+    Returns:
+        A new list of waypoints with duplicates removed.
+    """
+    if not waypoints:
+        return []
+
+    filtered_waypoints = []
+    
+    for waypoint in waypoints:
+        is_duplicate = False
+        # Check against the waypoints we've already approved
+        for filtered_wp in filtered_waypoints:
+            # Calculate the Euclidean distance between the XYZ coordinates
+            distance = np.linalg.norm(waypoint[:3] - filtered_wp[:3])
+            
+            if distance < min_distance:
+                is_duplicate = True
+                print(f"Found duplicate waypoint. Distance: {distance:.4f}m < threshold: {min_distance:.4f}m. Discarding.")
+                break # It's a duplicate of this one, no need to check further
+        
+        if not is_duplicate:
+            filtered_waypoints.append(waypoint)
+            
+    return filtered_waypoints
+
+def save_mask(mask: np.ndarray, output_path: str):
+    """
+    Saves a boolean numpy mask as a black and white PNG image.
+
+    Args:
+        mask (np.ndarray): The boolean mask (True/False values).
+        output_path (str): The full path, including filename, where the mask will be saved.
+    """
+    try:
+        # Ensure the directory exists
+        output_dir = os.path.dirname(output_path)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        # Convert the boolean mask to a black and white image (0 for False, 255 for True)
+        mask_image = (mask.astype(np.uint8) * 255)
+        
+        # Save the image
+        cv2.imwrite(output_path, mask_image)
+        print(f"Successfully saved mask to: {output_path}")
+
+    except Exception as e:
+        print(f"Error saving mask to {output_path}: {e}")
 #funkcija koja na osnovu rgb i depth slike i unutrasnjih i spljnjih parametara generise waypointe za robot
 # TODO napraviti instancu klase 
 def generate_waypoints(
@@ -149,7 +204,8 @@ def generate_waypoints(
         sam_query : str = "Segment object,1 instance at a time, in order", #promt modelu sta da segmentuje
         voxel_size_registration : float = 0.001, #istrazi                                                                       TO DO
         depth_scale_to_meters : float = 1000.0, #skaliranje iz milimetara u metre, da zivid daje cm bilo bi 100.0 ? 
-        rerun_visualization : bool = False #ukljucivanje/iskljucivanje rerun-a
+        rerun_visualization : bool = False, #ukljucivanje/iskljucivanje rerun-a
+        masks_output_dir: Optional[str] = None
                     )->List[np.ndarray]: 
     waypoints = []
     #rerun on/off
@@ -233,7 +289,7 @@ def generate_waypoints(
         rr.log("world/reference_model/target_downsampled", rr.Points3D(positions=np.asarray(target_down.points), colors = [0,0,255] if not target_down.has_colors() else None))
     
     #korak 5: prolazenje kroz svaku masku koju je SAM (ili YOLO) vratio, maske krecu od indexa 1
-    for i in range(1, num_full_segments):
+    for i in range(1, num_full_segments): #num_full_segments
         instance_index = i - 1 # 0-indexed masks
         print(f"\n--- Processing Mask Instance {instance_index} ---")
         start_row = i * H_orig
@@ -254,6 +310,14 @@ def generate_waypoints(
             ).astype(bool) # Convert back to boolean
         else:
             binary_mask_from_sam_resized = binary_mask_from_sam
+
+        if masks_output_dir:
+            # Construct a unique filename for the mask
+            mask_filename = f"mask_instance_{instance_index}.png"
+            full_mask_path = os.path.join(masks_output_dir, mask_filename)
+            
+            # Call the save function
+            save_mask(binary_mask_from_sam_resized, full_mask_path)
         
         if rerun_visualization:
              rr.log(f"world/instance_{instance_index}/sam_binary_mask", rr.SegmentationImage(binary_mask_from_sam_resized.astype(np.uint8)))
@@ -364,22 +428,23 @@ def generate_waypoints(
         waypoints.append(waypoint)
 
         print(f"Instance {instance_index}: Waypoint in World Frame: XYZ=[{xyz_world[0]:.3f}, {xyz_world[1]:.3f}, {xyz_world[2]:.3f}], RPY(xyz)=[{rpy_world[0]:.3f}, {rpy_world[1]:.3f}, {rpy_world[2]:.3f}] rad")
-        
-        if rerun_visualization:
-            # Log the computed waypoint pose in the world
-            rr.log(f"world/instance_{instance_index}/waypoint_pose_world", rr.Transform3D(translation=xyz_world, mat3x3=rotation_matrix_world))
-            # Visualize the alignment in Rerun: Transform the source_down to the target_down's frame using T_target_source
-            # (target_down is already logged at world/reference_model/target_downsampled)
-            source_down_aligned_to_target = copy.deepcopy(source_down)
-            source_down_aligned_to_target.transform(T_target_source)
-            rr.log(f"world/instance_{instance_index}/registration_visualization/source_aligned_to_target", 
-                     rr.Points3D(positions=np.asarray(source_down_aligned_to_target.points), 
-                                  colors=[255,0,0] if not source_down_aligned_to_target.has_colors() else None,
-                                  radii=0.002))
-            # Also log the original source_down for context if needed, transformed by camera extrinsics
-            # T_world_source_down_points = (camera_extrinsics_T_world_cam @ np.vstack((np.asarray(source_down.points).T, np.ones(len(source_down.points)))))[:3,:].T
-            # rr.log(f"world/instance_{instance_index}/registration_visualization/source_down_in_world", rr.Points3D(positions=T_world_source_down_points, colors=[255,165,0]))
+            
+    # After the loop, if waypoints were generated and visualization is on:
+    if not rerun_visualization and waypoints:
+        # Extract only the XYZ coordinates from the waypoints list
+        path_positions = [wp[:3] for wp in waypoints]
 
+        # Log the waypoints as a connected path, grouping it with the waypoint poses
+        rr.log(
+            "world/waypoints/path",  # Log the path as a child of 'waypoints'
+            rr.LineStrips3D(
+                [path_positions],
+                colors=[255, 215, 0],
+                radii=0.002
+            )
+        )
+        # We no longer need to log the individual yellow points.
+        # The Transform3D logged in the loop serves as a much better marker.
 
     if not waypoints:
         print("No waypoints generated.")
@@ -387,96 +452,7 @@ def generate_waypoints(
         print(f"\nSuccessfully generated {len(waypoints)} waypoint(s).")
     return waypoints
         
-    # AFTER generating pcd
-
-    path_to_reference_object = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\ref_sample_true.ply" 
-
-    print(f"Loading TARGET reference cloud from: {path_to_reference_object}")
-    if not os.path.exists(path_to_reference_object):
-        print(f"Error: Reference object file not found at '{path_to_reference_object}'. Please set the correct path.")
-        exit()
-        
-    target_pcd_reference = o3d.io.read_point_cloud(path_to_reference_object)
-
-    if not target_pcd_reference.has_points():
-        print("Error: Target reference point cloud is empty or failed to load.")
-        exit()
-    
-    print(f"Source (segmented) cloud points: {len(pcd.points)}")
-    print(f"Target (reference) cloud points: {len(target_pcd_reference.points)}")
-
-    print("Visualizing initial alignment of segmented (source) and reference (target)...")
-    display_point_clouds(pcd, target_pcd_reference, np.identity(4), "Initial Alignment for Registration")
-
-    # Registration parameters 
-    # !!!! USER: YOU MAY NEED TO TUNE voxel_size BASED ON YOUR OBJECT'S SCALE !!!!
-    # If your object is small (e.g., a few cm), voxel_size might be 0.001 (1mm) or 0.002 (2mm)
-    # If your object is larger (e.g., 0.5m), voxel_size might be 0.005 (5mm) or 0.01 (1cm)
-    voxel_size = 0.001 # Example: 5mm. Adjust based on point cloud scale and density!
-    print(f"Using voxel_size = {voxel_size} for registration preprocessing.")
-
-    # Preprocess both clouds
-    source_down, source_fpfh = preprocess_point_cloud(pcd, voxel_size)
-    target_down, target_fpfh = preprocess_point_cloud(target_pcd_reference, voxel_size)
-    
-    if not source_down.has_points() or not target_down.has_points():
-        print("Error: Downsampling resulted in an empty source or target point cloud. Adjust voxel_size.")
-        exit()
-
-    # Global registration (coarse alignment)
-    print("\n--- Performing Coarse Registration (Global) ---")
-    coarse_reg_result = execute_global_registration(
-        source_down, target_down, source_fpfh, target_fpfh, voxel_size
-    )
-    print("\nCoarse Registration Result:")
-    print(f"  Fitness: {coarse_reg_result.fitness:.4f}")
-    print(f"  Inlier RMSE: {coarse_reg_result.inlier_rmse:.4f}")
-    # print(f"  Transformation:\n{coarse_reg_result.transformation}")
-    display_point_clouds(source_down, target_down, coarse_reg_result.transformation, "Coarse Alignment (RANSAC on FPFH)")
-
-    # ICP registration (fine alignment)
-    print("\n--- Performing Fine Registration (ICP) ---")
-    initial_tf_for_icp = coarse_reg_result.transformation 
-    # If coarse registration is poor, you might try identity:
-    # if coarse_reg_result.fitness < 0.1: # Example threshold
-    #    print("Coarse registration fitness low, trying ICP from identity matrix as initial guess.")
-    #    initial_tf_for_icp = np.identity(4)
-        
-    icp_reg_result = refine_registration_icp(
-        source_down, target_down, initial_tf_for_icp, voxel_size, use_point_to_plane=True
-    )
-    print("\nICP Registration Result:")
-    print(f"  Fitness: {icp_reg_result.fitness:.4f}")
-    print(f"  Inlier RMSE: {icp_reg_result.inlier_rmse:.4f}")
-    # print(f"  Transformation:\n{icp_reg_result.transformation}")
-    display_point_clouds(source_down, target_down, icp_reg_result.transformation, "ICP Alignment (Fine)")
-
-    final_transformation = icp_reg_result.transformation
-    print("\nFinal transformation matrix from ICP (aligns source_down to target_down):")
-    print(final_transformation)
-    #GETTING THE COORDINATES
-    if final_transformation is not None:
-        print("\n--- Object Pose in Camera Coordinate System ---")
-    # This transformation aligns the source (camera view) to the target (reference model)
-    # To get the pose of the object in the camera frame (i.e., how the reference model
-    # would be placed in the camera's view to match the segmented object), we take the inverse.
-        
-        try:
-            pose_object_in_camera_frame = np.linalg.inv(final_transformation)
-            print("Object Pose Matrix (T_camera_<-_object_reference) = (T_registration_target_<-_source)^-1:")
-            print(pose_object_in_camera_frame)
-
-            # Extract translation (position) and rotation
-            object_position_in_camera = pose_object_in_camera_frame[0:3, 3]
-            object_rotation_matrix_in_camera = pose_object_in_camera_frame[0:3, 0:3]
-
-            print(f"\nXYZ objekta koji posmatramo, tj matchujemo sa ref objektom U ODNOSU na ks kamere. : {object_position_in_camera}")
-            print("Object Rotation Matrix in Camera Frame:")
-            print(object_rotation_matrix_in_camera)
-
-        except np.linalg.LinAlgError:
-            print("Error: Could not compute the inverse of the final_transformation matrix. It might be singular.")
-
+   
 if __name__ == "__main__":
     image_width_for_intrinsics = 1224
     image_height_for_intrinsics = 1024
@@ -503,7 +479,7 @@ if __name__ == "__main__":
     #some default extrinsic camera matrix, aligned with world axis
     example_camera_T_world_cam = np.identity(4)
 
-    path_to_raw_rgb_for_sam = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\2trid.png" # Original RGB for SAM
+    path_to_raw_rgb_for_sam = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\5trid.png" # Original RGB for SAM
     path_to_raw_depth = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\2depthmap.png" # Original Depth
     path_to_reference_model = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\ref_sample_true.ply" # Our best sample of an object we are picking
 
@@ -513,17 +489,48 @@ if __name__ == "__main__":
             camera_intrinsics_k=example_camera_K, # Use the K matrix for your specific camera and depth resolution
             camera_extrinsics=example_camera_T_world_cam,
             reference_object_path=path_to_reference_model,
-            sam_server_url="http://192.168.2.168:3001/sam", # Your SAM server
+            sam_server_url="http://109.245.66.46:3001/sam", # Your SAM server
             sam_query="Segment the circular grey metallic caps,1 instance at a time, in order", # Your SAM query
-            voxel_size_registration=0.0005, # Adjust as needed
+            voxel_size_registration=0.001, # Adjust as needed
             depth_scale_to_meters=1000.0, # If depth values are in mm
-            rerun_visualization=True
+            rerun_visualization=True,
+            masks_output_dir= r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\mask5"
     )
     
     if generated_robot_waypoints:
-            print("\n--- Generated Waypoints (World Frame) ---")
-            for idx, wp in enumerate(generated_robot_waypoints):
-                print(f"Waypoint {idx}: XYZ=[{wp[0]:.4f}, {wp[1]:.4f}, {wp[2]:.4f}], RPY(xyz)=[{wp[3]:.4f}, {wp[4]:.4f}, {wp[5]:.4f}] rad")
-    else:
-            print("No waypoints were generated by the function.")
+        print(f"\n--- Generated {len(generated_robot_waypoints)} raw waypoints. Now filtering duplicates... ---")
 
+        # Define how close two waypoints can be before being called a duplicate.
+        MINIMUM_DISTANCE_BETWEEN_OBJECTS = 0.02  # 2 centimeters
+
+        final_waypoints = filter_duplicate_waypoints(
+            generated_robot_waypoints,
+            min_distance=MINIMUM_DISTANCE_BETWEEN_OBJECTS
+        )
+
+    if final_waypoints:
+            print("\nVisualizing final waypoints and path in Rerun under 'world/final_waypoints'...")
+
+            # First, log the connecting line strip for the clean path
+            final_path_positions = [wp[:3] for wp in final_waypoints]
+            
+            # Then, log each final waypoint as a coordinate system pose
+            for idx, wp in enumerate(final_waypoints):
+                translation = wp[:3]
+                # The waypoint stores RPY angles; we need to convert them back to a rotation matrix for Rerun
+                rotation_matrix = Rotation.from_euler('xyz', wp[3:], degrees=False).as_matrix()
+                
+                rr.log(
+                    f"world/final_waypoints/{idx}",
+                    rr.Transform3D(
+                        translation=translation,
+                        mat3x3=rotation_matrix,
+                        axis_length=0.05 
+                    )
+                )
+                # If using the workaround for older SDKs:
+                # axis_length = 0.05
+                # rr.log(f"world/final_waypoints/{idx}/axes", rr.Arrows3D(...))
+
+    else:
+        print("No waypoints were generated by the function.")
