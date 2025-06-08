@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation # For RPY conversion (pip install scipy)
 from typing import List, Tuple, Optional # For type hinting
 from dataclasses import dataclass
+import glob
 
 # polinomalni koeficijenti look it up!
 rr.init("rerun_demo", spawn=True) #inicijalizacija reruna
@@ -193,84 +194,159 @@ def save_mask(mask: np.ndarray, output_path: str):
         print(f"Error saving mask to {output_path}: {e}")
 #funkcija koja na osnovu rgb i depth slike i unutrasnjih i spljnjih parametara generise waypointe za robot
 # TODO napraviti instancu klase 
+import glob # We'll use this for finding mask files
+
+def get_segmentation_masks(
+    rgb_image_path: str,
+    sam_server_url: Optional[str],
+    sam_query: str,
+    masks_input_dir: Optional[str],
+    input_rgb_shape: Tuple[int, int]
+) -> List[np.ndarray]:
+    """
+    Gets segmentation masks either from an online SAM server or a local directory.
+
+    Tries the SAM server first. If it fails (due to network error, server down, etc.)
+    or if no URL is provided, it falls back to loading masks from the local directory.
+
+    Args:
+        rgb_image_path: Path to the original RGB image (for the online server).
+        sam_server_url: URL of the SAM server. Can be None to force local mode.
+        sam_query: The text prompt for SAM.
+        masks_input_dir: Path to the directory containing pre-saved mask images.
+        input_rgb_shape: The (height, width) of the original RGB image.
+
+    Returns:
+        A list of boolean numpy arrays, where each array is a segmentation mask.
+        Returns an empty list if both methods fail.
+    """
+    masks = []
+    H_orig, W_orig = input_rgb_shape
+
+    # --- Mode 1: Try Online SAM Server ---
+    if sam_server_url:
+        print(f"Attempting to get masks from online SAM server: {sam_server_url}")
+        try:
+            input_rgb_for_sam = cv2.imread(rgb_image_path)
+            if input_rgb_for_sam is None:
+                raise ValueError(f"Could not read RGB image at {rgb_image_path}")
+
+            response = requests.post(
+                sam_server_url,
+                files={"image": cv2.imencode(".jpg", input_rgb_for_sam)[1].tobytes()},
+                data={"query": sam_query},
+                timeout=15 # A shorter timeout to fail faster if the server is offline
+            )
+            response.raise_for_status() # Check for HTTP errors like 404 or 500
+
+            decoded_stack = cv2.imdecode(np.frombuffer(response.content, np.uint8), -1)
+            if decoded_stack is None:
+                raise ValueError("Could not decode image received from SAM server.")
+
+            # Process the stacked image returned by the server
+            num_segments = decoded_stack.shape[0] // H_orig
+            for i in range(1, num_segments):
+                start_row = i * H_orig
+                end_row = (i + 1) * H_orig
+                instance_img = decoded_stack[start_row:end_row, :, :]
+                # Convert to boolean mask
+                binary_mask = np.any(instance_img > 10, axis=2) if len(instance_img.shape) == 3 else instance_img > 10
+                masks.append(binary_mask)
+
+            print(f"Successfully retrieved {len(masks)} masks from the online server.")
+            return masks
+
+        except (requests.exceptions.RequestException, ValueError) as e:
+            print(f"\nOnline SAM server failed: {e}")
+            print("--- Falling back to local mask directory. ---\n")
+            # If it fails, the function will proceed to the offline mode below
+
+    # --- Mode 2: Fallback to Local Directory ---
+    print(f"Loading masks from local directory: {masks_input_dir}")
+    if not masks_input_dir or not os.path.isdir(masks_input_dir):
+        print(f"Error: Local mask directory not found or not specified: {masks_input_dir}")
+        return []
+
+    # Find all png/jpg/jpeg files, sort them to ensure consistent order
+    mask_files = sorted(glob.glob(os.path.join(masks_input_dir, "*.png")))
+    mask_files.extend(sorted(glob.glob(os.path.join(masks_input_dir, "*.jpg"))))
+    mask_files.extend(sorted(glob.glob(os.path.join(masks_input_dir, "*.jpeg"))))
+
+    if not mask_files:
+        print(f"Warning: No mask files found in {masks_input_dir}")
+        return []
+
+    for mask_file in mask_files:
+        mask_image = cv2.imread(mask_file, cv2.IMREAD_GRAYSCALE)
+        if mask_image is not None:
+            # Convert to boolean mask (True for any pixel value > 10)
+            binary_mask = mask_image > 10
+            masks.append(binary_mask)
+
+    print(f"Successfully loaded {len(masks)} masks from the local directory.")
+    return masks
+
 def generate_waypoints(
-    
-        rgb_image_sam_path : str, #path do slike koju dajemo SAMu da segmentuje 
-        depth_image_path : str, #path do depth slike sa koje cemo da dobijamo point cloudove
-        camera_intrinsics_k : np.ndarray, #unutrasnji parametri kamere
-        camera_extrinsics : np.ndarray, #spoljasnji parametri kamere
-        reference_object_path : str, #path do ref objekta kog cemo da skeniramo vise puta da bi imali sto bolji ply sample
-        sam_server_url : str = "http://192.168.2.168:3001/sam", #url SAM servera
-        sam_query : str = "Segment object,1 instance at a time, in order", #promt modelu sta da segmentuje
-        voxel_size_registration : float = 0.001, #istrazi                                                                       TO DO
-        depth_scale_to_meters : float = 1000.0, #skaliranje iz milimetara u metre, da zivid daje cm bilo bi 100.0 ? 
-        rerun_visualization : bool = False, #ukljucivanje/iskljucivanje rerun-a
-        masks_output_dir: Optional[str] = None
-                    )->List[np.ndarray]: 
+    rgb_image_sam_path: str,
+    depth_image_path: str,
+    camera_intrinsics_k: np.ndarray,
+    camera_extrinsics: np.ndarray,
+    reference_object_path: str,
+    sam_server_url: Optional[str] = None,
+    sam_query: str = "Segment object,1 instance at a time, in order",
+    voxel_size_registration: float = 0.001,
+    depth_scale_to_meters: float = 1000.0,
+    rerun_visualization: bool = False,
+    masks_output_dir: Optional[str] = None,
+    masks_input_dir: Optional[str] = None
+) -> List[np.ndarray]:
+    """
+    Generates waypoints by segmenting objects, creating point clouds, and registering them.
+    Uses a helper function to get masks from an online server or a local directory.
+    """
     waypoints = []
-    #rerun on/off
     if rerun_visualization:
-            try:
-                rr.init("generate_waypoints_s ση מdemo", spawn=True) # Ensure unique app ID
-              ##  rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, timeless=True) # Example: Z up for world
-            except Exception as e:
-                print(f"Rerun initialization failed: {e}. Continuing without Rerun visualization in this function.")
-                rerun_visualization = False
-    #korak 1: ucitavanje rgb slike za SAM2 
+        try:
+            rr.init("generate_waypoints_demo", spawn=True)
+        except Exception as e:
+            print(f"Rerun initialization failed: {e}. Continuing without Rerun visualization.")
+            rerun_visualization = False
+
+    # 1. Load the main RGB image
     input_rgb_for_sam = cv2.imread(rgb_image_sam_path)
     if input_rgb_for_sam is None:
-        print(f"Error: Could not read input_rgb_for_sam: {rgb_image_sam_path}")
+        print(f"Error: Could not read input RGB image: {rgb_image_sam_path}")
         return waypoints
     if rerun_visualization:
         rr.log("world/input_images/rgb_for_sam", rr.Image(cv2.cvtColor(input_rgb_for_sam, cv2.COLOR_BGR2RGB)))
-    #korak 2: pozovemo SAM2 da bi dobili segmentirane slike (ili YOLO najvjerovatnije u buducnosti)
-    #pored slanja slike i citanja segmentirane slike, provjerava se da li je format tj rezolucija dobijenih slika
-    #jednaka rezoluciji depth slike na koju ce se maska primjenjivati
-    try:
-        response = requests.post(
-            sam_server_url,
-            files={"image": cv2.imencode(".jpg", input_rgb_for_sam)[1].tobytes()},
-            data={"query": sam_query},
-            timeout=30 # Added timeout
-        )
-        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
-    except requests.exceptions.RequestException as e:
-        print(f"SAM connection failed: {e}")
-        return waypoints
-    
-    decoded_response_image_stack = cv2.imdecode(np.frombuffer(response.content, np.uint8), -1)
-    #provjera da li je SAM vratio uopste sliku tj da li smo je ucitali
-    if decoded_response_image_stack is None:
-        print("Error: Could not decode image received from SAM server.")
-        return waypoints
-    H_orig, W_orig = input_rgb_for_sam.shape[:2]
-    H_response, W_response = decoded_response_image_stack.shape[:2]
-    #provjerava rezoluciju
-    if W_response != W_orig:
-        print(f"Warning: SAM Response image width ({W_response}) does not match input image width ({W_orig}). This might affect mask extraction if not a stacked image.")
-        # Consider resizing decoded_response_image_stack width or erroring if critical
 
-    num_full_segments = H_response // H_orig
-    if num_full_segments <= 1: # Expect at least annotations + 1 mask
-        print(f"Warning: SAM Response seems to contain only {num_full_segments-1} mask(s) (or only annotations). Check SAM query and output.")
-        # If num_full_segments is 0 or 1, it means no actual masks might be present beyond annotations.
-        if num_full_segments == 0: return waypoints
-    #korak 3: loadujemo depth sliku koja ce sluziti za generisanje point clouda
-    depth_image_raw = cv2.imread(depth_image_path, cv2.IMREAD_UNCHANGED)
-    #provjerava da li je loadovao sliku
-    if depth_image_raw is None:
-        print(f"Failed to load ORIGINAL depth image from: {depth_image_path}.")
+    # 2. Get segmentation masks using the robust helper function
+    all_masks = get_segmentation_masks(
+        rgb_image_path=rgb_image_sam_path,
+        sam_server_url=sam_server_url,
+        sam_query=sam_query,
+        masks_input_dir=masks_input_dir,
+        input_rgb_shape=input_rgb_for_sam.shape[:2]
+    )
+
+    if not all_masks:
+        print("Could not obtain any segmentation masks. Exiting.")
         return waypoints
-    #provjerava da je depth slika 2d niz i na kom kanalu se nalaze depth podaci
+
+    # 3. Load depth image
+    depth_image_raw = cv2.imread(depth_image_path, cv2.IMREAD_UNCHANGED)
+    if depth_image_raw is None:
+        print(f"Failed to load depth image from: {depth_image_path}.")
+        return waypoints
     if len(depth_image_raw.shape) == 3 and depth_image_raw.shape[2] >= 1:
-        print(f"Depth image has {depth_image_raw.shape[2]} channels. Using the first channel.")
-        processed_depth_image_original_resolution = depth_image_raw[:,:,0]
+        processed_depth_image_original_resolution = depth_image_raw[:, :, 0]
     elif len(depth_image_raw.shape) == 2:
         processed_depth_image_original_resolution = depth_image_raw
     else:
-        print(f"Error: Original depth image has an unsupported shape: {depth_image_raw.shape}.")
+        print(f"Error: Depth image has an unsupported shape: {depth_image_raw.shape}.")
         return waypoints
-    #loadujemo ref sample sa kojim poredimo sve ostale point cloudove
+
+    # 4. Load and preprocess the reference model
     if not os.path.exists(reference_object_path):
         print(f"Error: Reference object file not found at '{reference_object_path}'.")
         return waypoints
@@ -278,108 +354,78 @@ def generate_waypoints(
     if not target_pcd_reference.has_points():
         print("Error: Target reference point cloud is empty or failed to load.")
         return waypoints
-    #preprocessovanje point clouda target objekta
-    #voxel downsampling->smanjivanje broja tacaka zbog lakse obrade i smanjivanja suma, rezultat je target_down
-    #fpfh fast point feature histogram opisuju lokalnu geometriju oko svake tacke i koriste se za matchovanje objekta sa targetom
+        
     target_down, target_fpfh = preprocess_point_cloud(target_pcd_reference, voxel_size_registration)
     if not target_down.has_points():
         print("Error: Downsampling target reference cloud resulted in an empty cloud. Adjust voxel_size.")
         return waypoints
     if rerun_visualization:
-        rr.log("world/reference_model/target_downsampled", rr.Points3D(positions=np.asarray(target_down.points), colors = [0,0,255] if not target_down.has_colors() else None))
-    
-    #korak 5: prolazenje kroz svaku masku koju je SAM (ili YOLO) vratio, maske krecu od indexa 1
-    for i in range(1, num_full_segments): #num_full_segments
-        instance_index = i - 1 # 0-indexed masks
+        rr.log("world/reference_model/target_downsampled", rr.Points3D(positions=np.asarray(target_down.points), colors=[0, 0, 255] if not target_down.has_colors() else None))
+
+    # 5. Process each mask to generate a waypoint
+    for instance_index, binary_mask_from_sam in enumerate(all_masks):
         print(f"\n--- Processing Mask Instance {instance_index} ---")
-        start_row = i * H_orig
-        end_row = (i + 1) * H_orig     
-        sam_instance_visual_bgr = decoded_response_image_stack[start_row:end_row, :, :]
 
-        if len(sam_instance_visual_bgr.shape) == 3: # Color mask
-            binary_mask_from_sam = np.any(sam_instance_visual_bgr > 10, axis=2) # True for non-black pixels
-        else: # Grayscale mask
-            binary_mask_from_sam = sam_instance_visual_bgr > 10 # True for non-background pixels
-
+        # Resize mask if its dimensions don't match the depth image
         if binary_mask_from_sam.shape != processed_depth_image_original_resolution.shape[:2]:
             print(f"Resizing SAM binary mask from {binary_mask_from_sam.shape} to depth image shape {processed_depth_image_original_resolution.shape[:2]}")
             binary_mask_from_sam_resized = cv2.resize(
-                binary_mask_from_sam.astype(np.uint8) * 255, # Convert boolean to uint8 image for resize
-                (processed_depth_image_original_resolution.shape[1], processed_depth_image_original_resolution.shape[0]), # (W, H)
-                interpolation=cv2.INTER_NEAREST # Nearest neighbor for binary masks
-            ).astype(bool) # Convert back to boolean
+                binary_mask_from_sam.astype(np.uint8) * 255,
+                (processed_depth_image_original_resolution.shape[1], processed_depth_image_original_resolution.shape[0]),
+                interpolation=cv2.INTER_NEAREST
+            ).astype(bool)
         else:
             binary_mask_from_sam_resized = binary_mask_from_sam
 
+        # Save the mask for future offline use if an output directory is specified
         if masks_output_dir:
-            # Construct a unique filename for the mask
             mask_filename = f"mask_instance_{instance_index}.png"
             full_mask_path = os.path.join(masks_output_dir, mask_filename)
-            
-            # Call the save function
             save_mask(binary_mask_from_sam_resized, full_mask_path)
         
         if rerun_visualization:
-             rr.log(f"world/instance_{instance_index}/sam_binary_mask", rr.SegmentationImage(binary_mask_from_sam_resized.astype(np.uint8)))
+            rr.log(f"world/instance_{instance_index}/sam_binary_mask", rr.SegmentationImage(binary_mask_from_sam_resized.astype(np.uint8)))
 
-         # Mask the original RGB image using the SAM binary mask for point cloud coloring
-        # Ensure input_rgb_for_sam is also resized to match depth if its original dimensions differ
-        # (This assumes camera_intrinsics_K are for the processed_depth_image_original_resolution)
+        # Apply mask to RGB and Depth images
         rgb_for_pcd_coloring = input_rgb_for_sam.copy()
-        if rgb_for_pcd_coloring.shape[:2] != processed_depth_image_original_resolution.shape[:2]:
-            rgb_for_pcd_coloring = cv2.resize(
-                rgb_for_pcd_coloring,
-                (processed_depth_image_original_resolution.shape[1], processed_depth_image_original_resolution.shape[0]),
-                interpolation=cv2.INTER_AREA
-            )
-        
-        # Apply mask: set pixels outside the mask to black [0,0,0] in the RGB image
         rgb_for_pcd_coloring[~binary_mask_from_sam_resized] = [0, 0, 0]
-        if rerun_visualization:
-             rr.log(f"world/instance_{instance_index}/rgb_masked_for_pcd", rr.Image(cv2.cvtColor(rgb_for_pcd_coloring, cv2.COLOR_BGR2RGB)))
-
-
-        # Apply the binary mask to the original resolution depth image
+        
         depth_image_masked_instance = processed_depth_image_original_resolution.copy()
-        depth_image_masked_instance[~binary_mask_from_sam_resized] = 0 # Set depth to 0 outside mask
+        depth_image_masked_instance[~binary_mask_from_sam_resized] = 0
         
         if np.count_nonzero(depth_image_masked_instance) == 0:
             print(f"Warning: Mask instance {instance_index} resulted in an empty depth map after masking. Skipping.")
             continue
+            
         if rerun_visualization:
-             rr.log(f"world/instance_{instance_index}/depth_masked", rr.DepthImage(depth_image_masked_instance.astype(np.float32), meter=depth_scale_to_meters))
+            rr.log(f"world/instance_{instance_index}/rgb_masked_for_pcd", rr.Image(cv2.cvtColor(rgb_for_pcd_coloring, cv2.COLOR_BGR2RGB)))
+            rr.log(f"world/instance_{instance_index}/depth_masked", rr.DepthImage(depth_image_masked_instance.astype(np.float32), meter=depth_scale_to_meters))
 
-
-        # Prepare depth for Open3D (convert to float32 and scale to meters)
+        # Prepare for Open3D
         depth_for_o3d_instance = depth_image_masked_instance.astype(np.float32)
         depth_image_scaled_to_meters_instance = depth_for_o3d_instance / depth_scale_to_meters
         
-        # Define O3D Camera Intrinsics using the provided K matrix and current image dimensions
-        # (assuming K is for the resolution of processed_depth_image_original_resolution)
         image_height, image_width = depth_image_scaled_to_meters_instance.shape[:2]
         o3d_camera_intrinsics = o3d.camera.PinholeCameraIntrinsic(
             image_width, image_height,
-            camera_intrinsics_k[0,0], # fx
-            camera_intrinsics_k[1,1], # fy
-            camera_intrinsics_k[0,2], # cx
-            camera_intrinsics_k[1,2]  # cy
+            camera_intrinsics_k[0, 0], camera_intrinsics_k[1, 1],
+            camera_intrinsics_k[0, 2], camera_intrinsics_k[1, 2]
         )
         
-        # Generate Point Cloud for this instance (in camera frame)
+        # Generate Point Cloud for this instance
         pcd_instance_camera_frame = convert_rgbd_to_pointcloud(
-            rgb_for_pcd_coloring, # Masked original RGB
-            depth_image_scaled_to_meters_instance, # Masked and scaled depth
+            rgb_for_pcd_coloring,
+            depth_image_scaled_to_meters_instance,
             o3d_camera_intrinsics,
-            np.identity(4) # Point cloud generated in camera coordinate system
+            np.identity(4)
         )
 
         if pcd_instance_camera_frame is None or not pcd_instance_camera_frame.has_points():
             print(f"Failed to generate point cloud for instance {instance_index}. Skipping.")
             continue
         if rerun_visualization:
-            colors_for_rr = (np.asarray(pcd_instance_camera_frame.colors)*255).astype(np.uint8) if pcd_instance_camera_frame.has_colors() else None
+            colors_for_rr = (np.asarray(pcd_instance_camera_frame.colors) * 255).astype(np.uint8) if pcd_instance_camera_frame.has_colors() else None
             rr.log(f"world/instance_{instance_index}/segmented_pcd_camera_frame", rr.Points3D(positions=np.asarray(pcd_instance_camera_frame.points), colors=colors_for_rr))
-
 
         # Perform Registration against the reference model
         source_down, source_fpfh = preprocess_point_cloud(pcd_instance_camera_frame, voxel_size_registration)
@@ -390,23 +436,18 @@ def generate_waypoints(
         coarse_reg_result = execute_global_registration(
             source_down, target_down, source_fpfh, target_fpfh, voxel_size_registration
         )
-        if coarse_reg_result.fitness < 0.05: # Basic check for coarse alignment quality
-             print(f"Warning: Low fitness ({coarse_reg_result.fitness:.4f}) for coarse registration on instance {instance_index}.")
         
-        icp_reg_result = refine_registration_icp(
+        icp_reg_result = refine_registration_icp( # Using your ICP function
             source_down, target_down, coarse_reg_result.transformation, voxel_size_registration, use_point_to_plane=True
         )
         
-        if icp_reg_result.fitness < 0.3: # Stricter check for ICP success
-            print(f"Warning: Low fitness ({icp_reg_result.fitness:.4f}) after ICP for instance {instance_index}. Waypoint may be inaccurate or object not found.")
-            # continue # Optionally skip if ICP is too bad, or log as failed attempt
+        if icp_reg_result.fitness < 0.3:
+            print(f"Warning: Low fitness ({icp_reg_result.fitness:.4f}) after ICP for instance {instance_index}. Waypoint may be inaccurate.")
+            # We can choose to continue or skip bad registrations
+            # continue 
 
-        # final_transformation_source_to_target is T_target_model <- source_camera
-        # This transforms points from the source (camera) frame to the target (model) frame.
         T_target_source = icp_reg_result.transformation
 
-        # To get the pose of the object (defined by the target model's frame) in the camera's coordinate system:
-        # T_camera_object = (T_target_model <- source_camera)^-1 = T_source_camera <- target_model
         try:
             T_camera_object = np.linalg.inv(T_target_source)
         except np.linalg.LinAlgError:
@@ -414,44 +455,35 @@ def generate_waypoints(
             continue
             
         # Transform object pose from Camera Frame to World Frame
-        # T_world_object = T_world_camera * T_camera_object
         T_world_object = camera_extrinsics @ T_camera_object
 
-        # Extract XYZ position from the world frame pose
         xyz_world = T_world_object[0:3, 3]
-        
-        # Extract Rotation Matrix from the world frame pose and convert to Roll, Pitch, Yaw
         rotation_matrix_world = T_world_object[0:3, 0:3]
-        rpy_world = rotation_matrix_to_rpy(rotation_matrix_world) # [roll, pitch, yaw] in radians
+        rpy_world = rotation_matrix_to_rpy(rotation_matrix_world)
 
         waypoint = np.concatenate((xyz_world, rpy_world))
         waypoints.append(waypoint)
 
         print(f"Instance {instance_index}: Waypoint in World Frame: XYZ=[{xyz_world[0]:.3f}, {xyz_world[1]:.3f}, {xyz_world[2]:.3f}], RPY(xyz)=[{rpy_world[0]:.3f}, {rpy_world[1]:.3f}, {rpy_world[2]:.3f}] rad")
+        
+        if rerun_visualization:
+            rr.log(f"world/instance_{instance_index}/waypoint_pose_world", rr.Transform3D(translation=xyz_world, mat3x3=rotation_matrix_world, axis_length=0.03))
             
-    # After the loop, if waypoints were generated and visualization is on:
-    if not rerun_visualization and waypoints:
-        # Extract only the XYZ coordinates from the waypoints list
-        path_positions = [wp[:3] for wp in waypoints]
-
-        # Log the waypoints as a connected path, grouping it with the waypoint poses
-        rr.log(
-            "world/waypoints/path",  # Log the path as a child of 'waypoints'
-            rr.LineStrips3D(
-                [path_positions],
-                colors=[255, 215, 0],
-                radii=0.002
-            )
-        )
-        # We no longer need to log the individual yellow points.
-        # The Transform3D logged in the loop serves as a much better marker.
+            source_down_aligned_to_target = copy.deepcopy(source_down)
+            source_down_aligned_to_target.transform(T_target_source)
+            rr.log(f"world/instance_{instance_index}/registration_visualization/source_aligned_to_target", 
+                   rr.Points3D(positions=np.asarray(source_down_aligned_to_target.points), 
+                               colors=[255, 0, 0],
+                               radii=0.002))
 
     if not waypoints:
-        print("No waypoints generated.")
+        print("\nNo waypoints were generated.")
     else:
         print(f"\nSuccessfully generated {len(waypoints)} waypoint(s).")
-    return waypoints
         
+    return waypoints
+
+
    
 if __name__ == "__main__":
     image_width_for_intrinsics = 1224
@@ -479,7 +511,7 @@ if __name__ == "__main__":
     #some default extrinsic camera matrix, aligned with world axis
     example_camera_T_world_cam = np.identity(4)
 
-    path_to_raw_rgb_for_sam = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\5trid.png" # Original RGB for SAM
+    path_to_raw_rgb_for_sam = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\2trid.png" # Original RGB for SAM
     path_to_raw_depth = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\2depthmap.png" # Original Depth
     path_to_reference_model = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\ref_sample_true.ply" # Our best sample of an object we are picking
 
@@ -489,12 +521,13 @@ if __name__ == "__main__":
             camera_intrinsics_k=example_camera_K, # Use the K matrix for your specific camera and depth resolution
             camera_extrinsics=example_camera_T_world_cam,
             reference_object_path=path_to_reference_model,
-            sam_server_url="http://109.245.66.46:3001/sam", # Your SAM server
+            sam_server_url= None, # Your SAM server
             sam_query="Segment the circular grey metallic caps,1 instance at a time, in order", # Your SAM query
             voxel_size_registration=0.001, # Adjust as needed
             depth_scale_to_meters=1000.0, # If depth values are in mm
             rerun_visualization=True,
-            masks_output_dir= r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\mask5"
+            masks_output_dir= None,
+            masks_input_dir=r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\mask2" # Where to load from
     )
     
     if generated_robot_waypoints:
