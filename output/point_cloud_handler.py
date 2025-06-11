@@ -11,9 +11,16 @@ from scipy.spatial.transform import Rotation # For RPY conversion (pip install s
 from typing import List, Tuple, Optional # For type hinting
 from dataclasses import dataclass
 import glob
+from xarm.wrapper import XArmAPI
+import pyrealsense2 as rs
+import math 
+from transforms3d import euler
+import glob # We'll use this for finding mask files
+from transforms3d import affines 
+
+
 
 # polinomalni koeficijenti look it up!
-rr.init("rerun_demo", spawn=True) #inicijalizacija reruna
 
 
 def convert_rgbd_to_pointcloud(rgb, depth, intrinsic_matrix, extrinsic=None):
@@ -194,7 +201,6 @@ def save_mask(mask: np.ndarray, output_path: str):
         print(f"Error saving mask to {output_path}: {e}")
 #funkcija koja na osnovu rgb i depth slike i unutrasnjih i spljnjih parametara generise waypointe za robot
 # TODO napraviti instancu klase 
-import glob # We'll use this for finding mask files
 
 def get_segmentation_masks(
     rgb_image_path: str,
@@ -285,6 +291,50 @@ def get_segmentation_masks(
 
     print(f"Successfully loaded {len(masks)} masks from the local directory.")
     return masks
+
+# --- Helper function to convert rotation vector and translation vector to a 4x4 matrix ---
+def rtvec_to_matrix(rvec, tvec):
+    """Converts a rotation vector and a translation vector to a 4x4 transformation matrix."""
+    rotation_matrix, _ = cv2.Rodrigues(rvec) # _ to ignore the Jakobian that cv2.Rodrigues returnes
+    transformation_matrix = np.eye(4) # Square, neutral matrix, no rotation and no translatio
+    transformation_matrix[0:3, 0:3] = rotation_matrix
+    transformation_matrix[0:3, 3] = tvec.flatten() #flatten makes sure that we get a simple 2d array 1x3 and not 3x1
+    return transformation_matrix
+        #[[r11, r12, r13, tx],
+        #[r21, r22, r23, ty],
+        #[r31, r32, r33, tz],
+        #[0.,  0.,  0.,  1.]]
+
+def move(self, pose: np.ndarray):
+        x = pose[0, 3] * 1000
+        y = pose[1, 3] * 1000
+        z = pose[2, 3] * 1000
+        roll, pitch, yaw = euler.mat2euler(pose[:3, :3])
+        roll = math.degrees(roll)
+        pitch = math.degrees(pitch)
+        yaw = math.degrees(yaw)
+        error = self._arm.set_position(
+            x=x,
+            y=y,
+            z=z,
+            roll=roll,
+            pitch=pitch,
+            yaw=yaw,
+            speed=10,
+            wait=True,
+        )
+
+def get_tcp_pose(self) -> np.ndarray:
+        ok, pose = self._arm.get_position()
+        if ok != 0:
+            return None
+
+        translation = np.array(pose[:3]) / 1000
+        eulers = np.array(pose[3:]) * math.pi / 180
+        rotation = euler.euler2mat(
+            eulers[0], eulers[1], eulers[2], 'sxyz')
+        pose = affines.compose(translation, rotation, np.ones(3))
+        return pose
 
 def generate_waypoints(
     rgb_image_sam_path: str,
@@ -484,8 +534,282 @@ def generate_waypoints(
     return waypoints
 
 
-   
+def get_cam_intrinsics():
+   # 1. Create INSTANCES of the pipeline and config objects
+    pipeline = rs.pipeline()
+    config = rs.config()
+
+    # 2. Call enable_stream() on the config INSTANCE
+    # It's good practice to enable specific streams with a known resolution
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+
+    # 3. Call start() on the pipeline INSTANCE, passing the config INSTANCE
+    profile = pipeline.start(config)
+
+    try:
+        # Get the active stream profiles from the started profile object
+        depth_profile = profile.get_stream(rs.stream.depth)
+        color_profile = profile.get_stream(rs.stream.color)
+
+        # Downcast the profile to a video_stream_profile and get intrinsics
+        depth_intrinsics = depth_profile.as_video_stream_profile().get_intrinsics()
+        color_intrinsics = color_profile.as_video_stream_profile().get_intrinsics()
+
+        # --- Print Depth Stream Intrinsics ---
+        print("--- Depth Stream Intrinsics ---")
+        print(f"  Width: {depth_intrinsics.width}")
+        print(f"  Height: {depth_intrinsics.height}")
+        print(f"  Principal Point (ppx, ppy): ({depth_intrinsics.ppx:.3f}, {depth_intrinsics.ppy:.3f})")
+        print(f"  Focal Length (fx, fy): ({depth_intrinsics.fx:.3f}, {depth_intrinsics.fy:.3f})")
+        print(f"  Distortion Model: {depth_intrinsics.model}")
+        print(f"  Distortion Coefficients: {depth_intrinsics.coeffs}")
+        print("-" * 33)
+
+        # --- Print Color Stream Intrinsics ---
+        print("\n--- Color Stream Intrinsics ---")
+        print(f"  Width: {color_intrinsics.width}")
+        print(f"  Height: {color_intrinsics.height}")
+        print(f"  Principal Point (ppx, ppy): ({color_intrinsics.ppx:.3f}, {color_intrinsics.ppy:.3f})")
+        print(f"  Focal Length (fx, fy): ({color_intrinsics.fx:.3f}, {color_intrinsics.fy:.3f})")
+        print(f"  Distortion Model: {color_intrinsics.model}")
+        print(f"  Distortion Coefficients: {color_intrinsics.coeffs}")
+        print("-" * 33)
+
+        # You should also return the values if you want to use them elsewhere
+        return color_intrinsics, depth_intrinsics
+
+    finally:
+        # 4. Call stop() on the pipeline INSTANCE
+        pipeline.stop()
+        print("\nPipeline stopped.")
+
 if __name__ == "__main__":
+    get_cam_intrinsics()
+     
+
+
+if __name__ == "__main__1":
+    #checkboard parameters
+    cb_square_size = 25.0  # Size of a square in millimeters
+    cb_corners_w = 9      # Number of internal corners in width
+    cb_corners_h = 6     # Number of internal corners in height
+    #robot parameters
+    ROBOT_IP = "192.168.1.1844" 
+    #checkerboard parameters 
+    # !!!! DEFINE YOUR CHECKERBOARD PARAMETERS !!!!
+    CHECKERBOARD_SQUARE_SIZE_MM = 25.0  # Size of a square in millimeters
+    CHECKERBOARD_CORNERS_WIDTH = 9      # Number of internal corners in width
+    CHECKERBOARD_CORNERS_HEIGHT = 6     # Number of internal corners in height
+    
+    # !!!! DEFINE YOUR ROBOT AND CAMERA PARAMETERS !!!!
+    ROBOT_IP = "192.168.1.XXX" # Replace with your xArm's IP address
+    
+    # Prepare 3D object points for the checkerboard corners (in millimeters)
+    objp = np.zeros((CHECKERBOARD_CORNERS_HEIGHT * CHECKERBOARD_CORNERS_WIDTH, 3), np.float32)
+    objp[:, :2] = np.mgrid[0:CHECKERBOARD_CORNERS_WIDTH, 0:CHECKERBOARD_CORNERS_HEIGHT].T.reshape(-1, 2)
+    objp = objp * CHECKERBOARD_SQUARE_SIZE_MM
+    
+
+    R_gripper2base_list = []
+    t_gripper2base_list = []
+    R_target2cam_list = []
+    t_target2cam_list = []
+
+    #camera paramteres
+    image_width_for_intrinsics = 1224
+    image_height_for_intrinsics = 1024
+    fx = 1050.0 # example
+    fy = 1050.0 # example
+    cx = image_width_for_intrinsics / 2.0
+    cy = image_height_for_intrinsics / 2.0
+
+    camera_K = np.array([
+         [fx, 0, cx],
+         [0, fy, cy],
+         [0, 0,  1]
+    ])
+
+    cam_fx = 525.0
+    cam_fy = 525.0
+    cam_cx = 319.5
+    cam_cy = 239.5
+    example_camera_K = np.array([
+        [cam_fx, 0, cam_cx],
+        [0, cam_fy, cam_cy],
+        [0, 0,  1]
+    ])
+
+    target_pose1 = np.array([
+    [1, 0, 0, 0.210], # X = 0.25 meters
+    [1,  -1, 0, 0.0007], # Y = 0.40 meters
+    [0,  0, -1, 0.210], # Z = 0.30 meters
+    [0,  0, 0, 1]
+])
+    
+    target_pose2 = np.array([
+    [0, -1, 0, 0.25], # X = 0.25 meters
+    [1,  0, 0, 0.20], # Y = 0.40 meters
+    [0,  0, 1, 0.20], # Z = 0.30 meters
+    [0,  0, 0, 1]
+])
+    
+    target_pose3 = np.array([
+    [0, -1, 0, 0.35], # X = 0.25 meters
+    [1,  0, 0, 0.30], # Y = 0.40 meters
+    [0,  0, 1, 0.30], # Z = 0.30 meters
+    [0,  0, 0, 1]
+])
+    
+    target_pose4 = np.array([
+    [0, -1, 0, 0.40], # X = 0.25 meters
+    [1,  0, 0, 0.20], # Y = 0.40 meters
+    [0,  0, 1, 0.20], # Z = 0.30 meters
+    [0,  0, 0, 1]
+])
+    
+    target_pose5 = np.array([
+    [0, -1, 0, 0.25], # X = 0.25 meters
+    [1,  0, 0, 0.10], # Y = 0.40 meters
+    [0,  0, 1, 0.10], # Z = 0.30 meters
+    [0,  0, 0, 1]
+])
+
+    # --- Initialize Robot Arm ---
+    print("Initializing UFactory xArm...")
+    arm = XArmAPI(ROBOT_IP)
+    arm.connect()
+    arm.motion_enable(enable=True)
+    arm.set_mode(0) # Position control mode
+    arm.set_state(state=0) # Ready state
+    print("xArm Initialized.")
+
+    # --- Initialize RealSense Camera ---
+    print("Initializing Intel RealSense Camera...")
+    pipeline = rs.pipeline()
+    config = rs.config()
+    config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
+    pipeline.start(config)
+    print("RealSense Camera Initialized.")
+    time.sleep(2) # Give camera time to auto-adjust exposure, etc.
+
+    robot_poses_to_visit = [target_pose1,target_pose2,target_pose3,target_pose4,target_pose5]
+    for i, pose in enumerate(robot_poses_to_visit):
+        print(f"\n--- Processing Pose {i+1}/{len(robot_poses_to_visit)} ---")
+        
+        # 1. Move Robot
+        print(f"Moving robot to pose: {pose}")
+        move(arm,target_pose1) #robot_poses_to_visit[i]
+        print("Robot move complete.")
+        time.sleep(2) # Wait a moment for vibrations to settle
+
+
+        # 2. Get Robot Pose
+        # Get the 4x4 matrix representing the pose of the end-effector (gripper) in the base fram
+        get_tcp_pose(arm)
+        print("Retrieved robot pose.")
+        
+        # 3. Capture Camera Image
+        frames = pipeline.wait_for_frames()
+        color_frame = frames.get_color_frame()
+        if not color_frame:
+            print("Warning: Could not get color frame. Skipping this pose.")
+            continue
+        image = np.asanyarray(color_frame.get_data())
+        print("Captured camera image.")
+        
+        # 4. Detect Checkerboard
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        ret, corners = cv2.findChessboardCorners(gray, (CHECKERBOARD_CORNERS_WIDTH, CHECKERBOARD_CORNERS_HEIGHT), None)
+        
+        # 5. Calculate Target Pose in Camera Frame & Store Data
+        if ret:
+            print("Checkerboard found!")
+            
+            # Refine corner locations
+            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+            corners_refined = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+            
+            # Get the pose of the checkerboard (target) in the camera's coordinate system
+            _, rvec, tvec, _ = cv2.solvePnPRansac(objp, corners_refined, arm.get_camera_intrinsic()[0], arm.get_camera_distortion()[0]) # Using built-in camera matrix for example, replace with RealSense intrinsics
+            
+            # Convert to 4x4 matrix
+            T_target_in_cam = rtvec_to_matrix(rvec, tvec)
+            print("Calculated target pose in camera frame.")
+            
+            # Draw corners for visualization (optional)
+            cv2.drawChessboardCorners(image, (CHECKERBOARD_CORNERS_WIDTH, CHECKERBOARD_CORNERS_HEIGHT), corners_refined, ret)
+            cv2.imshow('Chessboard Detection', image)
+            cv2.waitKey(500) # Display for 0.5 seconds
+            
+            # Append the transformations to our lists for the final calculation
+            # We need the 3x3 rotation matrix and 3x1 translation vector for calibrateHandEye
+            #R_gripper2base_list.append(T_gripper_in_base[0:3, 0:3])
+            #t_gripper2base_list.append(T_gripper_in_base[0:3, 3])
+            R_target2cam_list.append(T_target_in_cam[0:3, 0:3])
+            t_target2cam_list.append(T_target_in_cam[0:3, 3])
+            print("Successfully stored data pair for this pose.")
+        else:
+            print("Warning: Checkerboard not found in this image. Skipping pose.")
+            # Show the image where detection failed for debugging (optional)
+            cv2.imshow('Chessboard Detection Failed', image)
+            cv2.waitKey(500)
+
+    # Clean up
+    cv2.destroyAllWindows()
+    pipeline.stop()
+    arm.disconnect()
+    print("\nCalibration loop finished. Collected data for", len(R_gripper2base_list), "poses.")
+
+    # ==== 4. PERFORM CALIBRATION CALCULATION ====
+    
+
+    print("\nPerforming Hand-Eye Calibration calculation...")
+    # This function calculates the transformation from the robot base to the camera frame
+    R_cam2base, t_cam2base = cv2.calibrateHandEye(
+        R_gripper2base=R_gripper2base_list,
+        t_gripper2base=t_gripper2base_list,
+        R_target2cam=R_target2cam_list,
+        t_target2cam=t_target2cam_list,
+        # Try different methods if results are poor. PARK is common.
+        method=cv2.CALIB_HAND_EYE_PARK 
+    )
+
+    # ==== 5. SAVE AND DISPLAY THE RESULT ====
+    
+    # Combine rotation and translation into a single 4x4 matrix
+    T_cam_in_base = np.eye(4)
+    T_cam_in_base[0:3, 0:3] = R_cam2base
+    T_cam_in_base[0:3, 3] = t_cam2base.flatten()
+
+    print("\n--- Hand-Eye Calibration Result ---")
+    print("Transformation Matrix (T_camera_in_base):")
+    print(T_cam_in_base)
+
+    # Save the result to a file for later use
+    np.save("hand_eye_calibration_matrix.npy", T_cam_in_base)
+    print("\nCalibration matrix saved to 'hand_eye_calibration_matrix.npy'")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+if __name__ == "null":
+    
+    #camera paramteres
     image_width_for_intrinsics = 1224
     image_height_for_intrinsics = 1024
     fx = 1050.0 # example
