@@ -17,6 +17,7 @@ import math
 from transforms3d import euler
 import glob # We'll use this for finding mask files
 from transforms3d import affines 
+from transforms3d.euler import euler2mat 
 
 
 
@@ -533,7 +534,6 @@ def generate_waypoints(
         
     return waypoints
 
-
 def get_cam_intrinsics():
    # 1. Create INSTANCES of the pipeline and config objects
     pipeline = rs.pipeline()
@@ -583,6 +583,32 @@ def get_cam_intrinsics():
         # 4. Call stop() on the pipeline INSTANCE
         pipeline.stop()
         print("\nPipeline stopped.")
+
+def create_pose_matrix(x_mm, y_mm, z_mm, roll_deg, pitch_deg, yaw_deg):
+    # Convert the Euler angles from degrees to radians
+    roll_rad = np.deg2rad(roll_deg)
+    pitch_rad = np.deg2rad(pitch_deg)
+    yaw_rad = np.deg2rad(yaw_deg)
+
+    # Create the 3x3 rotation matrix from the Euler angles
+    # 'sxyz' is a common convention for roll, pitch, yaw
+    rotation_matrix = euler2mat(roll_rad, pitch_rad, yaw_rad, axes='sxyz')
+
+    # ---- 2. Handle the Position ----
+    # Create the position vector and convert it from millimeters to meters
+    position_vector_meters = np.array([x_mm, y_mm, z_mm]) / 1000.0
+
+    # ---- 3. Assemble the final 4x4 Pose Matrix ----
+    # Start with a 4x4 identity matrix (a clean slate)
+    pose_matrix = np.identity(4)
+
+    # Place the 3x3 rotation matrix in the top-left corner
+    pose_matrix[:3, :3] = rotation_matrix
+
+    # Place the converted position vector in the last column
+    pose_matrix[:3, 3] = position_vector_meters
+
+    return pose_matrix
 
 if __name__ == "__main__":
     get_cam_intrinsics()
@@ -789,21 +815,6 @@ if __name__ == "__main__1":
     # Save the result to a file for later use
     np.save("hand_eye_calibration_matrix.npy", T_cam_in_base)
     print("\nCalibration matrix saved to 'hand_eye_calibration_matrix.npy'")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
