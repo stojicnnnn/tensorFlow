@@ -873,7 +873,7 @@ def calibrate_hand_eye(target_poses, robot_poses):
         robot_tvecs,
         target_rvecs,
         target_tvecs,
-        method=cv2.CALIB_HAND_EYE_ANDREFF,
+        method=cv2.CALIB_HAND_EYE_PARK,
     )
 
     calibration = np.vstack((np.hstack((rvec, tvec)), [0, 0, 0, 1]))
