@@ -776,6 +776,34 @@ def load_poses_from_file(filename: str) -> list:
     except Exception as e:
         print(f"\nAn error occurred while loading poses from file: {e}")
         return []
+def calibrate_hand_eye(target_poses, robot_poses):
+    target_rvecs, target_tvecs = [], []
+    robot_rvecs, robot_tvecs = [], []
+    for pose in robot_poses:
+        T_inv =  np.linalg.inv(pose)
+        R, _ = cv2.Rodrigues(T_inv[:3, :3])
+        tvec = T_inv[:3, 3]
+
+        robot_rvecs.append(R)
+        robot_tvecs.append(tvec)
+
+    for pose in target_poses:
+        R, _ = cv2.Rodrigues(pose[:3, :3])
+        tvec = pose[:3, 3]
+        target_rvecs.append(R)
+        target_tvecs.append(tvec)
+
+    rvec, tvec = cv2.calibrateHandEye(
+        robot_rvecs,
+        robot_tvecs,
+        target_rvecs,
+        target_tvecs,
+        method=cv2.CALIB_HAND_EYE_TSAI,
+    )
+
+    calibration = np.vstack((np.hstack((rvec, tvec)), [0, 0, 0, 1]))
+    print("Calibration matrix", calibration)
+
 
 if __name__ == "__main__1":
     
@@ -816,7 +844,7 @@ if __name__ == "__main__":
     #checkerboard parameters 
     #poses_to_visit = record_manual_poses("192.168.1.184",10)
     #if poses_to_visit:
-    #    save_poses_to_file(poses_to_visit, "test1")
+    #save_poses_to_file(poses_to_visit, "test1")
 
     robot_poses_to_visit = load_poses_from_file("test1")
 
@@ -839,7 +867,8 @@ if __name__ == "__main__":
     t_gripper2base_list = []
     R_target2cam_list = []
     t_target2cam_list = []
-
+    robot_poses = []
+    target_poses = []
 
     #camera paramteres
     image_width_for_intrinsics = 1224
@@ -864,41 +893,6 @@ if __name__ == "__main__":
         [0, cam_fy, cam_cy],
         [0, 0,  1]
     ])
-
-    # target_pose1 = np.array([
-    # [ 0.38600143, -0.92241696, -0.01831418,  0.3497],
-    # [-0.92237976, -0.38607185, -0.03009714, -0.0701],
-    # [-0.03502841,  0.00702671, -0.99935933,  0.4153],
-    # [ 0.        ,  0.        ,  0.        ,  1.    ]
-    # ])
-    
-    # target_pose2 = np.array([
-    # [ 0.38596645, -0.92243403, -0.01285227,  0.344 ],
-    # [-0.92240989, -0.38601614, -0.03009774, -0.1187],
-    # [-0.03262602,  0.0152643 , -0.9993616 ,  0.4155],
-    # [ 0.        ,  0.        ,  0.        ,  1.    ]
-    # ])
-    
-    # target_pose3 = np.array([
-    # [ 0.38596645, -0.92243403, -0.01285227,  0.352 ],
-    # [-0.92240989, -0.38601614, -0.03009774, -0.0778],
-    # [-0.03262602,  0.0152643 , -0.9993616 ,  0.3509],
-    # [ 0.        ,  0.        ,  0.        ,  1.    ]
-    # ])
-    
-    # target_pose4 = np.array([
-    # [ 0.38596645, -0.92243403, - 0.01285227 ,  0.352 ],
-    # [ -0.92240989 , - 0.38601614, - 0.03009774, -0.064],
-    # [-0.03262602, 0.0152643, - 0.9993616,  0.330],
-    # [ 0.        ,  0.        ,  0.        ,  1.    ]
-    # ])
-    
-    # target_pose5 = np.array([
-    # [ 0.38596645, -0.92243403, -0.01285227,  0.344 ],
-    # [-0.92240989, -0.38601614, -0.03009774, -0.1187],
-    # [-0.03262602,  0.0152643 , -0.9993616 ,  0.4155],
-    # [ 0.        ,  0.        ,  0.        ,  1.    ]
-    # ])
 
     # # --- Initialize Robot Arm ---
     print("Initializing UFactory xArm...")
@@ -981,10 +975,13 @@ if __name__ == "__main__":
                     # Convert to 4x4 matrix
                     T_target_in_cam = rtvec_to_matrix(rvec, tvec)
                     # Saving target and robot poses
+
                     R_gripper2base_list.append(T_gripper_in_base[0:3, 0:3]) 
                     t_gripper2base_list.append(T_gripper_in_base[0:3, 3])   
                     R_target2cam_list.append(T_target_in_cam[0:3, 0:3])
                     t_target2cam_list.append(T_target_in_cam[0:3, 3])
+                    robot_poses.append(T_gripper_in_base)
+                    target_poses.append(T_target_in_cam)
 
 
                     # Draw the detected corners and axes for visualization
@@ -1000,40 +997,17 @@ if __name__ == "__main__":
         else:
             print("Warning: No ArUco markers found in this image. Skipping pose.")
             cv2.imshow('Detection Failed', image)
+    
+    
+    save_poses_to_file(robot_poses,"Set1Robot")
+    save_poses_to_file(target_poses,"Set1Camera")
+    calibrate_hand_eye(target_poses=target_poses,robot_poses=robot_poses)
 
     # Clean up
     #cv2.destroyAllWindows()
     #pipeline.stop()
-    print("\nCalibration loop finished. Collected data for test")
-
-    # ==== 4. PERFORM CALIBRATION CALCULATION ====    
-
-    print("\nPerforming Hand-Eye Calibration calculation...")
-    # This function calculates the transformation from the robot base to the camera frame
-    R_cam2base, t_cam2base = cv2.calibrateHandEye(
-        R_gripper2base=R_gripper2base_list,
-        t_gripper2base=t_gripper2base_list,
-        R_target2cam=R_target2cam_list,
-        t_target2cam=t_target2cam_list,
-        # PARK is a common method for calibration.
-        # Try others for better results
-        method=cv2.CALIB_HAND_EYE_PARK 
-    )
-
-    # ==== 5. SAVE AND DISPLAY THE RESULT ====
     
-    # Combine rotation and translation into a single 4x4 matrix
-    T_cam_in_base = np.eye(4)
-    T_cam_in_base[0:3, 0:3] = R_cam2base
-    T_cam_in_base[0:3, 3] = t_cam2base.flatten()
 
-    print("\n--- Hand-Eye Calibration Result ---")
-    print("Transformation Matrix (T_camera_in_base):")
-    print(T_cam_in_base)
-
-    # Save the result to a file for later use
-    np.save("hand_eye_calibration_matrix.npy", T_cam_in_base)
-    print("\nCalibration matrix saved to 'hand_eye_calibration_matrix.npy'")
     cv2.waitKey(10)
 if __name__ == "null":
     
