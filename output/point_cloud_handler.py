@@ -18,11 +18,8 @@ from transforms3d import euler
 import glob # We'll use this for finding mask files
 from transforms3d import affines 
 from transforms3d.euler import euler2mat 
-
-
-
+import cv2.aruco as aruco
 # polinomalni koeficijenti look it up!
-
 
 def convert_rgbd_to_pointcloud(rgb, depth, intrinsic_matrix, extrinsic=None):
 #provjera da li je uopste loadovao sliku, da li slika postoji
@@ -55,7 +52,6 @@ def convert_rgbd_to_pointcloud(rgb, depth, intrinsic_matrix, extrinsic=None):
         rgbd_image, intrinsic_matrix, extrinsic 
     )
     return point_cloud
-
 def display_point_clouds(source, target, transformation=None, window_name="Point Cloud Alignment"):
     """Helper function to visualize alignment of two point clouds."""
     source_temp = copy.deepcopy(source)
@@ -68,7 +64,6 @@ def display_point_clouds(source, target, transformation=None, window_name="Point
         source_temp.transform(transformation)
         
     o3d.visualization.draw_geometries([source_temp, target_temp], window_name=window_name)
-
 def preprocess_point_cloud(pcd, voxel_size):
     """Downsample, estimate normals, and compute FPFH features."""
     print(f"Processing cloud with {len(pcd.points)} points.")
@@ -87,7 +82,6 @@ def preprocess_point_cloud(pcd, voxel_size):
         pcd_down,
         o3d.geometry.KDTreeSearchParamHybrid(radius=radius_feature, max_nn=100))
     return pcd_down, pcd_fpfh
-
 def execute_global_registration(source_down, target_down, source_fpfh,
                                 
                                target_fpfh, voxel_size):
@@ -103,7 +97,6 @@ def execute_global_registration(source_down, target_down, source_fpfh,
          o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(distance_threshold)],
         o3d.pipelines.registration.RANSACConvergenceCriteria(100000, 0.999))
     return result
-
 def refine_registration_icp(source, target, initial_transformation, voxel_size, use_point_to_plane=True):
     """Refine registration using ICP."""
     distance_threshold_icp = voxel_size * 0.4
@@ -127,7 +120,6 @@ def refine_registration_icp(source, target, initial_transformation, voxel_size, 
         o3d.pipelines.registration.ICPConvergenceCriteria(relative_fitness=1e-6, relative_rmse=1e-6, max_iteration=200) # Stricter criteria
     )
     return result
-
 def rotation_matrix_to_rpy(matrix: np.ndarray) -> np.ndarray:
     """
     Converts a 3x3 rotation matrix to roll, pitch, yaw (intrinsic Tait-Bryan xyz) in radians.
@@ -143,7 +135,6 @@ def rotation_matrix_to_rpy(matrix: np.ndarray) -> np.ndarray:
         print(f"Error converting rotation matrix to RPY: {e}")
         print(f"Problematic matrix:\n{matrix}")
         return np.array([0.0, 0.0, 0.0]) # Default on error
-
 def filter_duplicate_waypoints(waypoints: List[np.ndarray], min_distance: float) -> List[np.ndarray]:
     """
     Filters a list of waypoints to remove duplicates based on proximity.
@@ -176,7 +167,6 @@ def filter_duplicate_waypoints(waypoints: List[np.ndarray], min_distance: float)
             filtered_waypoints.append(waypoint)
             
     return filtered_waypoints
-
 def save_mask(mask: np.ndarray, output_path: str):
     """
     Saves a boolean numpy mask as a black and white PNG image.
@@ -200,9 +190,6 @@ def save_mask(mask: np.ndarray, output_path: str):
 
     except Exception as e:
         print(f"Error saving mask to {output_path}: {e}")
-#funkcija koja na osnovu rgb i depth slike i unutrasnjih i spljnjih parametara generise waypointe za robot
-# TODO napraviti instancu klase 
-
 def get_segmentation_masks(
     rgb_image_path: str,
     sam_server_url: Optional[str],
@@ -292,8 +279,6 @@ def get_segmentation_masks(
 
     print(f"Successfully loaded {len(masks)} masks from the local directory.")
     return masks
-
-# --- Helper function to convert rotation vector and translation vector to a 4x4 matrix ---
 def rtvec_to_matrix(rvec, tvec):
     """Converts a rotation vector and a translation vector to a 4x4 transformation matrix."""
     rotation_matrix, _ = cv2.Rodrigues(rvec) # _ to ignore the Jakobian that cv2.Rodrigues returnes
@@ -305,7 +290,6 @@ def rtvec_to_matrix(rvec, tvec):
         #[r21, r22, r23, ty],
         #[r31, r32, r33, tz],
         #[0.,  0.,  0.,  1.]]
-
 def move(self, pose: np.ndarray):
         x = pose[0, 3] * 1000
         y = pose[1, 3] * 1000
@@ -321,10 +305,9 @@ def move(self, pose: np.ndarray):
             roll=roll,
             pitch=pitch,
             yaw=yaw,
-            speed=10,
+            speed=60,
             wait=True,
         )
-
 def get_tcp_pose(self) -> np.ndarray:
         ok, pose = self._arm.get_position()
         if ok != 0:
@@ -336,7 +319,6 @@ def get_tcp_pose(self) -> np.ndarray:
             eulers[0], eulers[1], eulers[2], 'sxyz')
         pose = affines.compose(translation, rotation, np.ones(3))
         return pose
-
 def generate_waypoints(
     rgb_image_sam_path: str,
     depth_image_path: str,
@@ -533,7 +515,6 @@ def generate_waypoints(
         print(f"\nSuccessfully generated {len(waypoints)} waypoint(s).")
         
     return waypoints
-
 def get_cam_intrinsics():
    # 1. Create INSTANCES of the pipeline and config objects
     pipeline = rs.pipeline()
@@ -581,9 +562,8 @@ def get_cam_intrinsics():
 
     finally:
         # 4. Call stop() on the pipeline INSTANCE
-        pipeline.stop()
-        print("\nPipeline stopped.")
-
+        #pipeline.stop()
+        print("\nGot camera intrinsics.")
 def create_pose_matrix(x_mm, y_mm, z_mm, roll_deg, pitch_deg, yaw_deg):
     # Convert the Euler angles from degrees to radians
     roll_rad = np.deg2rad(roll_deg)
@@ -609,38 +589,257 @@ def create_pose_matrix(x_mm, y_mm, z_mm, roll_deg, pitch_deg, yaw_deg):
     pose_matrix[:3, 3] = position_vector_meters
 
     return pose_matrix
+def generate_charuco(ARUCO_DICT= cv2.aruco.DICT_6X6_250,
+                     SQUARES_VERTICALLY= 6,SQUARES_HORIZONTALLY= 7,
+                     SQUARE_LENGTH= 0.03,MARKER_LENGTH = 0.02,
+                     LENGTH_PX= 0.02,MARGIN_PX= 20):
+    SAVE_NAME = 'ChArUco_Marker.png'
+    # ------------------------------
 
-if __name__ == "__main__":
-    get_cam_intrinsics()
-     
+    dictionary = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
+    board = cv2.aruco.CharucoBoard((SQUARES_VERTICALLY, SQUARES_HORIZONTALLY), SQUARE_LENGTH, MARKER_LENGTH, dictionary)
+    size_ratio = SQUARES_HORIZONTALLY / SQUARES_VERTICALLY
+    img = cv2.aruco.CharucoBoard.generateImage(board, (LENGTH_PX, int(LENGTH_PX*size_ratio)), marginSize=MARGIN_PX)
+    cv2.imshow("img", img)
+    cv2.waitKey(2000)
+    cv2.imwrite(SAVE_NAME, img)
+def test_camera():
+    WIDTH = 1280
+    HEIGHT = 720
+    FPS = 30
+    # -----------------------------
 
+    pipeline = None
+    try:
+        print("Attempting to initialize RealSense camera...")
+        pipeline = rs.pipeline()
+        config = rs.config()
+
+        print(f"Requesting Depth Stream: {WIDTH}x{HEIGHT} @ {FPS} FPS")
+        config.enable_stream(rs.stream.depth, WIDTH, HEIGHT, rs.format.z16, FPS)
+        
+        print(f"Requesting Color Stream: {WIDTH}x{HEIGHT} @ {FPS} FPS")
+        config.enable_stream(rs.stream.color, WIDTH, HEIGHT, rs.format.bgr8, FPS)
+
+        print("\nStarting pipeline...")
+        profile = pipeline.start(config)
+        
+        print("\nSUCCESS! Pipeline started successfully.")
+        print("Camera is initialized and streams are resolved.")
+
+        # Get one frame to confirm it works
+        frames = pipeline.wait_for_frames()
+        depth_frame = frames.get_depth_frame()
+        color_frame = frames.get_color_frame()
+
+        if not depth_frame or not color_frame:
+            print("Could not get frames, but pipeline started.")
+        else:
+            print(f"Successfully received frames: Color={color_frame.width}x{color_frame.height}, Depth={depth_frame.width}x{depth_frame.height}")
+
+    except RuntimeError as e:
+        print("\n-------------------------")
+        print(">>> FAILED to start pipeline! <<<")
+        print(f"RuntimeError: {e}")
+        print("-------------------------")
+        print("Possible Solutions:")
+        print("1. Did you completely CLOSE the Intel RealSense Viewer application?")
+        print("2. Is the camera plugged into a blue USB 3.0 port?")
+        print("3. Do the WIDTH, HEIGHT, and FPS in this script exactly match a working combination from the Viewer?")
+
+    finally:
+        if pipeline:
+            print("\nStopping pipeline.")
+            pipeline.stop()
+def record_manual_poses(robot_ip: str, num_poses: int = 10):
+    """
+    Interactively records a specified number of robot poses.
+    
+    The user manually moves the robot to a desired position and presses Enter
+    to record the pose. This repeats for the specified number of iterations.
+    
+    Args:
+        robot_ip (str): The IP address of the xArm.
+        num_poses (int): The total number of poses to record.
+
+    Returns:
+        list: A list of 4x4 numpy arrays, where each array is a recorded pose.
+              Returns an empty list if the connection fails or is interrupted.
+    """
+    
+    # List to store the recorded 4x4 pose matrices
+    recorded_poses = []
+    
+    # Initialize and connect to the robot arm
+    arm = XArmAPI(robot_ip)
+    arm.connect()
+    if not arm.connected:
+        print(f"Error: Failed to connect to xArm at IP: {robot_ip}")
+        return recorded_poses
+
+    try:
+        # Enable manual mode on the robot so it can be moved by hand.
+        # This will require you to press the "Freedrive" button on the arm.
+        print("\nEnabling manual mode on the robot arm.")
+        print("You will need to press and hold the 'Freedrive' button on the arm to move it.")
+        arm.set_mode(2)  # Mode 2 is manual movement mode
+        arm.set_state(0)
+        time.sleep(1)
+
+        print(f"\nReady to record {num_poses} poses.")
+        print("="*40)
+
+        # Loop for the specified number of iterations
+        for i in range(num_poses):
+            # Wait for the user to press a key
+            input(f"--> Pose {i+1}/{num_poses}: Move the robot to the desired position, then press Enter to record...")
+            
+            # Read the robot's current position
+            error_code, current_pose_list = arm.get_position(is_radian=False)
+            
+            if error_code != 0:
+                print(f"Error reading robot position (error code: {error_code}). Skipping this pose.")
+                continue
+
+            # Extract XYZ and RPY values
+            # The SDK returns position in millimeters, so we convert to meters
+            x_meters = current_pose_list[0] 
+            y_meters = current_pose_list[1] 
+            z_meters = current_pose_list[2] 
+            roll_degrees = current_pose_list[3]
+            pitch_degrees = current_pose_list[4]
+            yaw_degrees = current_pose_list[5]
+
+            print(f"    ...Recording pose: X={x_meters:.4f}m, Y={y_meters:.4f}m, Z={z_meters:.4f}m, R={roll_degrees:.1f}°, P={pitch_degrees:.1f}°, Y={yaw_degrees:.1f}°")
+
+            # Convert the pose to a 4x4 matrix
+            pose_matrix = create_pose_matrix(
+                x_mm=x_meters,
+                y_mm=y_meters,
+                z_mm=z_meters,
+                roll_deg=roll_degrees,
+                pitch_deg=pitch_degrees,
+                yaw_deg=yaw_degrees
+            )
+
+            if pose_matrix is not None:
+                # Store the matrix in our list
+                recorded_poses.append(pose_matrix)
+                print(f"    ...Pose {i+1} successfully recorded.")
+            else:
+                print(f"    ...Failed to create matrix for pose {i+1}. Skipping.")
+
+    except Exception as e:
+        print(f"\nAn error occurred during the process: {e}")
+    finally:
+        # Always make sure to disconnect from the robot
+        print("\nDisconnecting from the robot arm.")
+        arm.set_mode(0) # Set back to position control mode
+        arm.set_state(0)
+        arm.disconnect()
+        
+    return recorded_poses
+def save_poses_to_file(poses: list, filename: str):
+    try:
+        with open(filename, 'w') as f:
+            for i, pose_matrix in enumerate(poses):
+                # Save each matrix to the file
+                np.savetxt(f, pose_matrix, fmt='%.8f')
+                # Add a separator line between matrices (unless it's the last one)
+                if i < len(poses) - 1:
+                    f.write('\n')
+        print(f"\nSuccessfully saved {len(poses)} poses to '{filename}'")
+    except Exception as e:
+        print(f"\nAn error occurred while saving poses to file: {e}")
+def load_poses_from_file(filename: str) -> list:
+    if not os.path.exists(filename):
+        print(f"Error: Pose file not found at '{filename}'")
+        return []
+        
+    try:
+        # Load the entire file content as a single array
+        # The blank lines will be treated as delimiters by fromstring
+        with open(filename, 'r') as f:
+            content = f.read()
+        # Create an array from the string content, then reshape
+        # Each matrix is 4x4 = 16 numbers.
+        poses_flat = np.fromstring(content, sep=' ')
+        num_matrices = len(poses_flat) // 16
+        if len(poses_flat) % 16 != 0:
+             print("Warning: File content is not a multiple of 16. The file might be corrupted.")
+        
+        # Reshape the flat array into a list of 4x4 matrices
+        poses = poses_flat.reshape(num_matrices, 4, 4)
+        print(f"\nSuccessfully loaded {len(poses)} poses from '{filename}'")
+        return list(poses) # Convert the top-level array to a list
+        
+    except Exception as e:
+        print(f"\nAn error occurred while loading poses from file: {e}")
+        return []
 
 if __name__ == "__main__1":
-    #checkboard parameters
-    cb_square_size = 25.0  # Size of a square in millimeters
-    cb_corners_w = 9      # Number of internal corners in width
-    cb_corners_h = 6     # Number of internal corners in height
-    #robot parameters
-    ROBOT_IP = "192.168.1.1844" 
+    
+    # !!!! REPLACE WITH YOUR ROBOT'S IP ADDRESS !!!!
+    XARM_IP_ADDRESS = "192.168.1.XXX"
+    NUMBER_OF_POSES_TO_RECORD = 10
+
+    # Run the recording function
+    my_poses = record_manual_poses(XARM_IP_ADDRESS, NUMBER_OF_POSES_TO_RECORD)
+
+    # After the loop is done, print out all the recorded poses
+    if my_poses:
+        print("\n" + "="*50)
+        print("          All Recorded Poses")
+        print("="*50 + "\n")
+        
+        for i, pose_matrix in enumerate(my_poses):
+            # Define a variable name for easy copy-pasting
+            variable_name = f"target_pose{i+1}"
+            
+            # Use NumPy's print options for nice formatting
+            np.set_printoptions(precision=8, suppress=True)
+            
+            print(f"# This is {variable_name}, generated from your manual position {i+1}")
+            print(f"{variable_name} = np.array([")
+            # Format each row to look clean
+            for row in pose_matrix:
+                print(f"    [ {row[0]:9.8f}, {row[1]:9.8f}, {row[2]:9.8f}, {row[3]:9.8f}],")
+            print("])\n")
+            
+    else:
+        print("\nNo poses were recorded.")
+
+    print("Program finished.")
+
+if __name__ == "__main__":
+    ROBOT_IP = "192.168.1.184" 
     #checkerboard parameters 
-    # !!!! DEFINE YOUR CHECKERBOARD PARAMETERS !!!!
-    CHECKERBOARD_SQUARE_SIZE_MM = 25.0  # Size of a square in millimeters
-    CHECKERBOARD_CORNERS_WIDTH = 9      # Number of internal corners in width
-    CHECKERBOARD_CORNERS_HEIGHT = 6     # Number of internal corners in height
+    #poses_to_visit = record_manual_poses("192.168.1.184",10)
+    #if poses_to_visit:
+    #    save_poses_to_file(poses_to_visit, "test1")
+
+    robot_poses_to_visit = load_poses_from_file("test1")
+
+    CHARUCO_SQUARES_X = 6
+    CHARUCO_SQUARES_Y = 7      # Number of squares in height
+    CHARUCO_SQUARE_LENGTH_M = 0.0263 # Size of a square in METERS
+    CHARUCO_MARKER_LENGTH_M = 0.0177 # Size of an ArUco marker in METERS
+    CHARUCO_DICTIONARY = aruco.getPredefinedDictionary(aruco.DICT_6X6_250) # Example dictionary
     
-    # !!!! DEFINE YOUR ROBOT AND CAMERA PARAMETERS !!!!
-    ROBOT_IP = "192.168.1.XXX" # Replace with your xArm's IP address
-    
-    # Prepare 3D object points for the checkerboard corners (in millimeters)
-    objp = np.zeros((CHECKERBOARD_CORNERS_HEIGHT * CHECKERBOARD_CORNERS_WIDTH, 3), np.float32)
-    objp[:, :2] = np.mgrid[0:CHECKERBOARD_CORNERS_WIDTH, 0:CHECKERBOARD_CORNERS_HEIGHT].T.reshape(-1, 2)
-    objp = objp * CHECKERBOARD_SQUARE_SIZE_MM
-    
+    # Checkerboard corners 
+    charuco_board = aruco.CharucoBoard(
+        (CHARUCO_SQUARES_X, CHARUCO_SQUARES_Y), 
+        CHARUCO_SQUARE_LENGTH_M, 
+        CHARUCO_MARKER_LENGTH_M, 
+        CHARUCO_DICTIONARY
+    )
+    aruco_params = aruco.DetectorParameters()
 
     R_gripper2base_list = []
     t_gripper2base_list = []
     R_target2cam_list = []
     t_target2cam_list = []
+
 
     #camera paramteres
     image_width_for_intrinsics = 1224
@@ -666,42 +865,42 @@ if __name__ == "__main__1":
         [0, 0,  1]
     ])
 
-    target_pose1 = np.array([
-    [1, 0, 0, 0.210], # X = 0.25 meters
-    [1,  -1, 0, 0.0007], # Y = 0.40 meters
-    [0,  0, -1, 0.210], # Z = 0.30 meters
-    [0,  0, 0, 1]
-])
+    # target_pose1 = np.array([
+    # [ 0.38600143, -0.92241696, -0.01831418,  0.3497],
+    # [-0.92237976, -0.38607185, -0.03009714, -0.0701],
+    # [-0.03502841,  0.00702671, -0.99935933,  0.4153],
+    # [ 0.        ,  0.        ,  0.        ,  1.    ]
+    # ])
     
-    target_pose2 = np.array([
-    [0, -1, 0, 0.25], # X = 0.25 meters
-    [1,  0, 0, 0.20], # Y = 0.40 meters
-    [0,  0, 1, 0.20], # Z = 0.30 meters
-    [0,  0, 0, 1]
-])
+    # target_pose2 = np.array([
+    # [ 0.38596645, -0.92243403, -0.01285227,  0.344 ],
+    # [-0.92240989, -0.38601614, -0.03009774, -0.1187],
+    # [-0.03262602,  0.0152643 , -0.9993616 ,  0.4155],
+    # [ 0.        ,  0.        ,  0.        ,  1.    ]
+    # ])
     
-    target_pose3 = np.array([
-    [0, -1, 0, 0.35], # X = 0.25 meters
-    [1,  0, 0, 0.30], # Y = 0.40 meters
-    [0,  0, 1, 0.30], # Z = 0.30 meters
-    [0,  0, 0, 1]
-])
+    # target_pose3 = np.array([
+    # [ 0.38596645, -0.92243403, -0.01285227,  0.352 ],
+    # [-0.92240989, -0.38601614, -0.03009774, -0.0778],
+    # [-0.03262602,  0.0152643 , -0.9993616 ,  0.3509],
+    # [ 0.        ,  0.        ,  0.        ,  1.    ]
+    # ])
     
-    target_pose4 = np.array([
-    [0, -1, 0, 0.40], # X = 0.25 meters
-    [1,  0, 0, 0.20], # Y = 0.40 meters
-    [0,  0, 1, 0.20], # Z = 0.30 meters
-    [0,  0, 0, 1]
-])
+    # target_pose4 = np.array([
+    # [ 0.38596645, -0.92243403, - 0.01285227 ,  0.352 ],
+    # [ -0.92240989 , - 0.38601614, - 0.03009774, -0.064],
+    # [-0.03262602, 0.0152643, - 0.9993616,  0.330],
+    # [ 0.        ,  0.        ,  0.        ,  1.    ]
+    # ])
     
-    target_pose5 = np.array([
-    [0, -1, 0, 0.25], # X = 0.25 meters
-    [1,  0, 0, 0.10], # Y = 0.40 meters
-    [0,  0, 1, 0.10], # Z = 0.30 meters
-    [0,  0, 0, 1]
-])
+    # target_pose5 = np.array([
+    # [ 0.38596645, -0.92243403, -0.01285227,  0.344 ],
+    # [-0.92240989, -0.38601614, -0.03009774, -0.1187],
+    # [-0.03262602,  0.0152643 , -0.9993616 ,  0.4155],
+    # [ 0.        ,  0.        ,  0.        ,  1.    ]
+    # ])
 
-    # --- Initialize Robot Arm ---
+    # # --- Initialize Robot Arm ---
     print("Initializing UFactory xArm...")
     arm = XArmAPI(ROBOT_IP)
     arm.connect()
@@ -710,29 +909,38 @@ if __name__ == "__main__1":
     arm.set_state(state=0) # Ready state
     print("xArm Initialized.")
 
-    # --- Initialize RealSense Camera ---
-    print("Initializing Intel RealSense Camera...")
-    pipeline = rs.pipeline()
-    config = rs.config()
-    config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
-    pipeline.start(config)
-    print("RealSense Camera Initialized.")
-    time.sleep(2) # Give camera time to auto-adjust exposure, etc.
-
-    robot_poses_to_visit = [target_pose1,target_pose2,target_pose3,target_pose4,target_pose5]
     for i, pose in enumerate(robot_poses_to_visit):
+        #pocetak testa
+        # --- Initialize RealSense Camera ---
+        print("Initializing Intel RealSense Camera...")
+        pipeline = rs.pipeline()
+        config = rs.config()
+        config.enable_stream(rs.stream.color, 1920 , 1080, rs.format.bgr8, 30)
+        pipeline.start(config)
+        print("RealSense Camera Initialized.")
+        time.sleep(2) # Give camera time to auto-adjust exposure, etc.
+
+        color_intrinsics, _ = get_cam_intrinsics()
+        camera_matrix = np.array([
+        [color_intrinsics.fx, 0, color_intrinsics.ppx],
+        [0, color_intrinsics.fy, color_intrinsics.ppy],
+        [0, 0, 1]
+        ], dtype=np.float32)
+
+        dist_coeffs = np.array(color_intrinsics.coeffs, dtype=np.float32)
+        #kraj testa
+
+
         print(f"\n--- Processing Pose {i+1}/{len(robot_poses_to_visit)} ---")
-        
+
         # 1. Move Robot
         print(f"Moving robot to pose: {pose}")
-        move(arm,target_pose1) #robot_poses_to_visit[i]
+        move(arm,pose) #robot_poses_to_visit[i]
         print("Robot move complete.")
         time.sleep(2) # Wait a moment for vibrations to settle
-
-
         # 2. Get Robot Pose
         # Get the 4x4 matrix representing the pose of the end-effector (gripper) in the base fram
-        get_tcp_pose(arm)
+        T_gripper_in_base = get_tcp_pose(arm)
         print("Retrieved robot pose.")
         
         # 3. Capture Camera Image
@@ -744,51 +952,61 @@ if __name__ == "__main__1":
         image = np.asanyarray(color_frame.get_data())
         print("Captured camera image.")
         
-        # 4. Detect Checkerboard
+        # 4. Detect charuco board
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        ret, corners = cv2.findChessboardCorners(gray, (CHECKERBOARD_CORNERS_WIDTH, CHECKERBOARD_CORNERS_HEIGHT), None)
-        
+        corners, ids, rejected_img_points = aruco.detectMarkers(gray, CHARUCO_DICTIONARY, parameters=aruco_params)
+
         # 5. Calculate Target Pose in Camera Frame & Store Data
-        if ret:
-            print("Checkerboard found!")
+        if ids is not None and len(ids) > 0:
+            print(f"Found {len(ids)} ArUco markers. Interpolating ChArUco corners...")
             
-            # Refine corner locations
-            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-            corners_refined = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-            
-            # Get the pose of the checkerboard (target) in the camera's coordinate system
-            _, rvec, tvec, _ = cv2.solvePnPRansac(objp, corners_refined, arm.get_camera_intrinsic()[0], arm.get_camera_distortion()[0]) # Using built-in camera matrix for example, replace with RealSense intrinsics
-            
-            # Convert to 4x4 matrix
-            T_target_in_cam = rtvec_to_matrix(rvec, tvec)
-            print("Calculated target pose in camera frame.")
-            
-            # Draw corners for visualization (optional)
-            cv2.drawChessboardCorners(image, (CHECKERBOARD_CORNERS_WIDTH, CHECKERBOARD_CORNERS_HEIGHT), corners_refined, ret)
-            cv2.imshow('Chessboard Detection', image)
-            cv2.waitKey(500) # Display for 0.5 seconds
-            
-            # Append the transformations to our lists for the final calculation
-            # We need the 3x3 rotation matrix and 3x1 translation vector for calibrateHandEye
-            #R_gripper2base_list.append(T_gripper_in_base[0:3, 0:3])
-            #t_gripper2base_list.append(T_gripper_in_base[0:3, 3])
-            R_target2cam_list.append(T_target_in_cam[0:3, 0:3])
-            t_target2cam_list.append(T_target_in_cam[0:3, 3])
-            print("Successfully stored data pair for this pose.")
+            # Interpolate to find the precise checkerboard corners from the detected ArUco markers
+            retval, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(
+                corners, ids, gray, charuco_board
+            )
+            # If we found enough ChArUco corners, estimate the board's pose
+            if retval and charuco_corners is not None and charuco_ids is not None and len(charuco_corners) > 3:
+                print(f"Successfully interpolated {len(charuco_corners)} ChArUco corners. Estimating pose...")
+
+                # Estimate the pose of the ChArUco board.
+                # This function directly gives the pose relative to the camera frame.
+                # It uses the 3D board definition and the found 2D corners.
+                success, rvec, tvec = aruco.estimatePoseCharucoBoard(
+                    charuco_corners, charuco_ids, charuco_board, camera_matrix, dist_coeffs, None, None
+                )
+
+                if success:
+                    print("ChArUco pose estimated successfully!")
+                    
+                    # Convert to 4x4 matrix
+                    T_target_in_cam = rtvec_to_matrix(rvec, tvec)
+                    # Saving target and robot poses
+                    R_gripper2base_list.append(T_gripper_in_base[0:3, 0:3]) 
+                    t_gripper2base_list.append(T_gripper_in_base[0:3, 3])   
+                    R_target2cam_list.append(T_target_in_cam[0:3, 0:3])
+                    t_target2cam_list.append(T_target_in_cam[0:3, 3])
+
+
+                    # Draw the detected corners and axes for visualization
+                    image_with_detections = aruco.drawDetectedCornersCharuco(image.copy(), charuco_corners, charuco_ids)
+                    cv2.drawFrameAxes(image_with_detections, camera_matrix, dist_coeffs, rvec, tvec, 0.1) # Draw a 10cm axis
+                    cv2.imshow('ChArUco Detection', image_with_detections)
+                    cv2.waitKey(500)
+                    print("Successfully stored data pair for this pose.")
+                else:
+                    print("Warning: Pose estimation for ChArUco board failed.")
+            else:
+                print("Warning: Not enough ChArUco corners interpolated to estimate pose.")
         else:
-            print("Warning: Checkerboard not found in this image. Skipping pose.")
-            # Show the image where detection failed for debugging (optional)
-            cv2.imshow('Chessboard Detection Failed', image)
-            cv2.waitKey(500)
+            print("Warning: No ArUco markers found in this image. Skipping pose.")
+            cv2.imshow('Detection Failed', image)
 
     # Clean up
-    cv2.destroyAllWindows()
-    pipeline.stop()
-    arm.disconnect()
-    print("\nCalibration loop finished. Collected data for", len(R_gripper2base_list), "poses.")
+    #cv2.destroyAllWindows()
+    #pipeline.stop()
+    print("\nCalibration loop finished. Collected data for test")
 
-    # ==== 4. PERFORM CALIBRATION CALCULATION ====
-    
+    # ==== 4. PERFORM CALIBRATION CALCULATION ====    
 
     print("\nPerforming Hand-Eye Calibration calculation...")
     # This function calculates the transformation from the robot base to the camera frame
@@ -797,7 +1015,8 @@ if __name__ == "__main__1":
         t_gripper2base=t_gripper2base_list,
         R_target2cam=R_target2cam_list,
         t_target2cam=t_target2cam_list,
-        # Try different methods if results are poor. PARK is common.
+        # PARK is a common method for calibration.
+        # Try others for better results
         method=cv2.CALIB_HAND_EYE_PARK 
     )
 
@@ -815,9 +1034,7 @@ if __name__ == "__main__1":
     # Save the result to a file for later use
     np.save("hand_eye_calibration_matrix.npy", T_cam_in_base)
     print("\nCalibration matrix saved to 'hand_eye_calibration_matrix.npy'")
-
-
-
+    cv2.waitKey(10)
 if __name__ == "null":
     
     #camera paramteres
