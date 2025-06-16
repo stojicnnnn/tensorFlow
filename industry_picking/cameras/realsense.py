@@ -27,7 +27,8 @@ class Camera:
         self.width = width
         self.height = height
         print(f"RealSense instance created with a resolution of {width}x{height}.")
-        
+    def test(self):
+        print("Test success!")
     def connect(self):
         print("Initializing Intel RealSense Camera...")
         pipeline = rs.pipeline()
