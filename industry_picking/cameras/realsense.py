@@ -22,13 +22,13 @@ import cv2.aruco as aruco
 
 
 
-class cam_realsense:
+class Camera:
     def __init__(self,width,height):
         self.width = width
         self.height = height
         print(f"RealSense instance created with a resolution of {width}x{height}.")
         
-    def _connect_camera(self):
+    def connect(self):
         print("Initializing Intel RealSense Camera...")
         pipeline = rs.pipeline()
         config = rs.config()
@@ -43,7 +43,7 @@ class cam_realsense:
         transformation_matrix[0:3, 0:3] = rotation_matrix
         transformation_matrix[0:3, 3] = tvec.flatten() #flatten makes sure that we get a simple 2d array 1x3 and not 3x1
         return transformation_matrix
-    def get_cam_intrinsics(self):
+    def getIntrinsics(self):
         
         # Returns camera matrix with color intrinsics as well as distrortion coeffs
         pipeline = rs.pipeline()
@@ -75,7 +75,7 @@ class cam_realsense:
             # 4. Call stop() on the pipeline INSTANCE
             pipeline.stop()
             print("\nGot camera intrinsics.")
-    def get_img(self):
+    def captureImage(self):
         frames = rs.pipeline.wait_for_frames()
         color_frame = frames.get_color_frame()
         if not color_frame:
@@ -84,7 +84,7 @@ class cam_realsense:
         image = np.asanyarray(color_frame.get_data())
         print("Captured camera image.")
         return image        
-    def get_pose(self,image,CHARUCO_SQUARES_X=6,CHARUCO_SQUARES_Y=7,CHARUCO_SQUARE_LENGTH_M=0.0263,CHARUCO_MARKER_LENGTH_M=0.0177,charuco_dict_name="DICT_6X6_250"):
+    def capturePose(self,image,CHARUCO_SQUARES_X=6,CHARUCO_SQUARES_Y=7,CHARUCO_SQUARE_LENGTH_M=0.0263,CHARUCO_MARKER_LENGTH_M=0.0177,charuco_dict_name="DICT_6X6_250"):
         self.image = image
         
         try:

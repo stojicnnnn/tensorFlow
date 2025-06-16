@@ -19,82 +19,7 @@ import glob # We'll use this for finding mask files
 from transforms3d import affines 
 from transforms3d.euler import euler2mat 
 import cv2.aruco as aruco
-# polinomalni koeficijenti look it up!
 
-# Creating a class for working with camera
-# Depending on the name (Zivi,RealSense), set of specific functions will be run to get 
-# the camera intrinsics and initialize camera
-# Should have methods for acquiring image, changing settings etc
-
-class Camera:
-    def __init__(self,cam_name):
-        self.name = cam_name
-    def connect_camera(self):
-        if self.name == "realsense" :
-            print("Initializing Intel RealSense Camera...")
-            pipeline = rs.pipeline()
-            config = rs.config()
-            config.enable_stream(rs.stream.color, 1920 , 1080, rs.format.bgr8, 30)
-            pipeline.start(config)
-            print("RealSense Camera Initialized.")
-            time.sleep(2) # Give camera time to auto-adjust exposure, etc.
-        if self.name == "zivid":
-            pass
-        else:
-            pass 
-    def get_cam_intrinsics(self):
-        pipeline = rs.pipeline()
-        config = rs.config()
-        config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-        config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-        # 3. Call start() on the pipeline INSTANCE, passing the config INSTANCE
-        profile = pipeline.start(config)
-        try:
-            # Get the active stream profiles from the started profile object
-            depth_profile = profile.get_stream(rs.stream.depth)
-            color_profile = profile.get_stream(rs.stream.color)
-
-            # Downcast the profile to a video_stream_profile and get intrinsics
-            depth_intrinsics = depth_profile.as_video_stream_profile().get_intrinsics()
-            color_intrinsics = color_profile.as_video_stream_profile().get_intrinsics()
-
-            # --- Print Depth Stream Intrinsics ---
-            print("--- Depth Stream Intrinsics ---")
-            print(f"  Width: {depth_intrinsics.width}")
-            print(f"  Height: {depth_intrinsics.height}")
-            print(f"  Principal Point (ppx, ppy): ({depth_intrinsics.ppx:.3f}, {depth_intrinsics.ppy:.3f})")
-            print(f"  Focal Length (fx, fy): ({depth_intrinsics.fx:.3f}, {depth_intrinsics.fy:.3f})")
-            print(f"  Distortion Model: {depth_intrinsics.model}")
-            print(f"  Distortion Coefficients: {depth_intrinsics.coeffs}")
-            print("-" * 33)
-
-            # --- Print Color Stream Intrinsics ---
-            print("\n--- Color Stream Intrinsics ---")
-            print(f"  Width: {color_intrinsics.width}")
-            print(f"  Height: {color_intrinsics.height}")
-            print(f"  Principal Point (ppx, ppy): ({color_intrinsics.ppx:.3f}, {color_intrinsics.ppy:.3f})")
-            print(f"  Focal Length (fx, fy): ({color_intrinsics.fx:.3f}, {color_intrinsics.fy:.3f})")
-            print(f"  Distortion Model: {color_intrinsics.model}")
-            print(f"  Distortion Coefficients: {color_intrinsics.coeffs}")
-            print("-" * 33)
-
-            camera_matrix = np.array([
-            [color_intrinsics.fx, 0, color_intrinsics.ppx],
-            [0, color_intrinsics.fy, color_intrinsics.ppy],
-            [0, 0, 1]
-            ], dtype=np.float32)
-
-            dist_coeffs = np.array(color_intrinsics.coeffs, dtype=np.float32)
-
-            return camera_matrix,dist_coeffs
-
-        finally:
-            # 4. Call stop() on the pipeline INSTANCE
-            #pipeline.stop()
-            print("\nGot camera intrinsics.")
-    
-
-    
 
 def convert_rgbd_to_pointcloud(rgb, depth, intrinsic_matrix, extrinsic=None):
 #provjera da li je uopste loadovao sliku, da li slika postoji
@@ -354,7 +279,7 @@ def get_segmentation_masks(
 
     print(f"Successfully loaded {len(masks)} masks from the local directory.")
     return masks
-def rtvec_to_matrix(rvec, tvec):
+
     """Converts a rotation vector and a translation vector to a 4x4 transformation matrix."""
     rotation_matrix, _ = cv2.Rodrigues(rvec) # _ to ignore the Jakobian that cv2.Rodrigues returnes
     transformation_matrix = np.eye(4) # Square, neutral matrix, no rotation and no translatio
@@ -365,35 +290,7 @@ def rtvec_to_matrix(rvec, tvec):
         #[r21, r22, r23, ty],
         #[r31, r32, r33, tz],
         #[0.,  0.,  0.,  1.]]
-def move(self, pose: np.ndarray):
-        x = pose[0, 3] * 1000
-        y = pose[1, 3] * 1000
-        z = pose[2, 3] * 1000
-        roll, pitch, yaw = euler.mat2euler(pose[:3, :3])
-        roll = math.degrees(roll)
-        pitch = math.degrees(pitch)
-        yaw = math.degrees(yaw)
-        error = self._arm.set_position(
-            x=x,
-            y=y,
-            z=z,
-            roll=roll,
-            pitch=pitch,
-            yaw=yaw,
-            speed=80,
-            wait=True,
-        )
-def get_tcp_pose(self) -> np.ndarray:
-        ok, pose = self._arm.get_position()
-        if ok != 0:
-            return None
 
-        translation = np.array(pose[:3]) / 1000
-        eulers = np.array(pose[3:]) * math.pi / 180
-        rotation = euler.euler2mat(
-            eulers[0], eulers[1], eulers[2], 'sxyz')
-        pose = affines.compose(translation, rotation, np.ones(3))
-        return pose
 def generate_waypoints(
     rgb_image_sam_path: str,
     depth_image_path: str,
@@ -590,55 +487,6 @@ def generate_waypoints(
         print(f"\nSuccessfully generated {len(waypoints)} waypoint(s).")
         
     return waypoints
-def get_cam_intrinsics():
-   # 1. Create INSTANCES of the pipeline and config objects
-    pipeline = rs.pipeline()
-    config = rs.config()
-
-    # 2. Call enable_stream() on the config INSTANCE
-    # It's good practice to enable specific streams with a known resolution
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-
-    # 3. Call start() on the pipeline INSTANCE, passing the config INSTANCE
-    profile = pipeline.start(config)
-
-    try:
-        # Get the active stream profiles from the started profile object
-        depth_profile = profile.get_stream(rs.stream.depth)
-        color_profile = profile.get_stream(rs.stream.color)
-
-        # Downcast the profile to a video_stream_profile and get intrinsics
-        depth_intrinsics = depth_profile.as_video_stream_profile().get_intrinsics()
-        color_intrinsics = color_profile.as_video_stream_profile().get_intrinsics()
-
-        # --- Print Depth Stream Intrinsics ---
-        print("--- Depth Stream Intrinsics ---")
-        print(f"  Width: {depth_intrinsics.width}")
-        print(f"  Height: {depth_intrinsics.height}")
-        print(f"  Principal Point (ppx, ppy): ({depth_intrinsics.ppx:.3f}, {depth_intrinsics.ppy:.3f})")
-        print(f"  Focal Length (fx, fy): ({depth_intrinsics.fx:.3f}, {depth_intrinsics.fy:.3f})")
-        print(f"  Distortion Model: {depth_intrinsics.model}")
-        print(f"  Distortion Coefficients: {depth_intrinsics.coeffs}")
-        print("-" * 33)
-
-        # --- Print Color Stream Intrinsics ---
-        print("\n--- Color Stream Intrinsics ---")
-        print(f"  Width: {color_intrinsics.width}")
-        print(f"  Height: {color_intrinsics.height}")
-        print(f"  Principal Point (ppx, ppy): ({color_intrinsics.ppx:.3f}, {color_intrinsics.ppy:.3f})")
-        print(f"  Focal Length (fx, fy): ({color_intrinsics.fx:.3f}, {color_intrinsics.fy:.3f})")
-        print(f"  Distortion Model: {color_intrinsics.model}")
-        print(f"  Distortion Coefficients: {color_intrinsics.coeffs}")
-        print("-" * 33)
-
-        # You should also return the values if you want to use them elsewhere
-        return color_intrinsics, depth_intrinsics
-
-    finally:
-        # 4. Call stop() on the pipeline INSTANCE
-        #pipeline.stop()
-        print("\nGot camera intrinsics.")
 def create_pose_matrix(x_mm, y_mm, z_mm, roll_deg, pitch_deg, yaw_deg):
     # Convert the Euler angles from degrees to radians
     roll_rad = np.deg2rad(roll_deg)
@@ -814,222 +662,13 @@ def record_manual_poses(robot_ip: str, num_poses: int = 10):
         arm.disconnect()
         
     return recorded_poses
-def save_poses_to_file(poses: list, filename: str):
-    try:
-        with open(filename, 'w') as f:
-            for i, pose_matrix in enumerate(poses):
-                # Save each matrix to the file
-                np.savetxt(f, pose_matrix, fmt='%.8f')
-                # Add a separator line between matrices (unless it's the last one)
-                if i < len(poses) - 1:
-                    f.write('\n')
-        print(f"\nSuccessfully saved {len(poses)} poses to '{filename}'")
-    except Exception as e:
-        print(f"\nAn error occurred while saving poses to file: {e}")
-def load_poses_from_file(filename: str) -> list:
-    if not os.path.exists(filename):
-        print(f"Error: Pose file not found at '{filename}'")
-        return []
-        
-    try:
-        # Load the entire file content as a single array
-        # The blank lines will be treated as delimiters by fromstring
-        with open(filename, 'r') as f:
-            content = f.read()
-        # Create an array from the string content, then reshape
-        # Each matrix is 4x4 = 16 numbers.
-        poses_flat = np.fromstring(content, sep=' ')
-        num_matrices = len(poses_flat) // 16
-        if len(poses_flat) % 16 != 0:
-             print("Warning: File content is not a multiple of 16. The file might be corrupted.")
-        
-        # Reshape the flat array into a list of 4x4 matrices
-        poses = poses_flat.reshape(num_matrices, 4, 4)
-        print(f"\nSuccessfully loaded {len(poses)} poses from '{filename}'")
-        return list(poses) # Convert the top-level array to a list
-        
-    except Exception as e:
-        print(f"\nAn error occurred while loading poses from file: {e}")
-        return []
-def calibrate_hand_eye(target_poses, robot_poses):
-    target_rvecs, target_tvecs = [], []
-    robot_rvecs, robot_tvecs = [], []
-    for pose in robot_poses:
-        T_inv =  np.linalg.inv(pose)
-        R, _ = cv2.Rodrigues(T_inv[:3, :3])
-        tvec = T_inv[:3, 3]
 
-        robot_rvecs.append(R)
-        robot_tvecs.append(tvec)
 
-    for pose in target_poses:
-        R, _ = cv2.Rodrigues(pose[:3, :3])
-        tvec = pose[:3, 3]
-        target_rvecs.append(R)
-        target_tvecs.append(tvec)
-
-    rvec, tvec = cv2.calibrateHandEye(
-        robot_rvecs,
-        robot_tvecs,
-        target_rvecs,
-        target_tvecs,
-        method=cv2.CALIB_HAND_EYE_PARK,
-    )
-
-    calibration = np.vstack((np.hstack((rvec, tvec)), [0, 0, 0, 1]))
-    print("Calibration matrix", calibration)
 
 
 if __name__ == "__main__":
-    target_poses=load_poses_from_file("Set1Camera")
-    robot_poses=load_poses_from_file("Set1Robot")
-    calibrate_hand_eye(target_poses=target_poses,robot_poses=robot_poses)
+    pass
 
-if __name__ == "__main__1":
-    ROBOT_IP = "192.168.1.184" 
-    #poses_to_visit = record_manual_poses("192.168.1.184",10)
-    #if poses_to_visit:
-    #save_poses_to_file(poses_to_visit, "test1")
-
-    robot_poses_to_visit = load_poses_from_file("test1")
-
-    CHARUCO_SQUARES_X = 6
-    CHARUCO_SQUARES_Y = 7      # Number of squares in height
-    CHARUCO_SQUARE_LENGTH_M = 0.0263 # Size of a square in METERS
-    CHARUCO_MARKER_LENGTH_M = 0.0177 # Size of an ArUco marker in METERS
-    CHARUCO_DICTIONARY = aruco.getPredefinedDictionary(aruco.DICT_6X6_250) # Example dictionary
-    
-    # Checkerboard corners 
-    charuco_board = aruco.CharucoBoard(
-        (CHARUCO_SQUARES_X, CHARUCO_SQUARES_Y), 
-        CHARUCO_SQUARE_LENGTH_M, 
-        CHARUCO_MARKER_LENGTH_M, 
-        CHARUCO_DICTIONARY
-    )
-    aruco_params = aruco.DetectorParameters()
-
-    R_gripper2base_list = []
-    t_gripper2base_list = []
-    R_target2cam_list = []
-    t_target2cam_list = []
-    robot_poses = []
-    target_poses = []
-
-    # # --- Initialize Robot Arm ---
-    print("Initializing UFactory xArm...")
-    arm = XArmAPI(ROBOT_IP)
-    arm.connect()
-    arm.motion_enable(enable=True)
-    arm.set_mode(0) # Position control mode
-    arm.set_state(state=0) # Ready state
-    print("xArm Initialized.")
-
-    for i, pose in enumerate(robot_poses_to_visit):
-        #pocetak testa
-        # --- Initialize RealSense Camera ---
-        print("Initializing Intel RealSense Camera...")
-        pipeline = rs.pipeline()
-        config = rs.config()
-        config.enable_stream(rs.stream.color, 1920 , 1080, rs.format.bgr8, 30)
-        pipeline.start(config)
-        print("RealSense Camera Initialized.")
-        time.sleep(2) # Give camera time to auto-adjust exposure, etc.
-
-        color_intrinsics, _ = get_cam_intrinsics()
-        camera_matrix = np.array([
-        [color_intrinsics.fx, 0, color_intrinsics.ppx],
-        [0, color_intrinsics.fy, color_intrinsics.ppy],
-        [0, 0, 1]
-        ], dtype=np.float32)
-
-        dist_coeffs = np.array(color_intrinsics.coeffs, dtype=np.float32)
-        #kraj testa
-
-
-        print(f"\n--- Processing Pose {i+1}/{len(robot_poses_to_visit)} ---")
-
-        # 1. Move Robot
-        print(f"Moving robot to pose: {pose}")
-        move(arm,pose) 
-        print("Robot move complete.")
-        time.sleep(2) # Wait a moment for vibrations to settle
-        # 2. Get Robot Pose
-        # Get the 4x4 matrix representing the pose of the end-effector (gripper) in the base fram
-        T_gripper_in_base = get_tcp_pose(arm)
-        print(f"Retrieved robot pose : {T_gripper_in_base}")
-        
-        # 3. Capture Camera Image
-        frames = pipeline.wait_for_frames()
-        color_frame = frames.get_color_frame()
-        if not color_frame:
-            print("Warning: Could not get color frame. Skipping this pose.")
-            continue
-        image = np.asanyarray(color_frame.get_data())
-        print("Captured camera image.")
-        
-        # 4. Detect charuco board
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        corners, ids, rejected_img_points = aruco.detectMarkers(gray, CHARUCO_DICTIONARY, parameters=aruco_params)
-
-        # 5. Calculate Target Pose in Camera Frame & Store Data
-        if ids is not None and len(ids) > 0:
-            print(f"Found {len(ids)} ArUco markers. Interpolating ChArUco corners...")
-            
-            # Interpolate to find the precise checkerboard corners from the detected ArUco markers
-            retval, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(
-                corners, ids, gray, charuco_board
-            )
-            # If we found enough ChArUco corners, estimate the board's pose
-            if retval and charuco_corners is not None and charuco_ids is not None and len(charuco_corners) > 3:
-                print(f"Successfully interpolated {len(charuco_corners)} ChArUco corners. Estimating pose...")
-
-                # Estimate the pose of the ChArUco board.
-                # This function directly gives the pose relative to the camera frame.
-                # It uses the 3D board definition and the found 2D corners.
-                success, rvec, tvec = aruco.estimatePoseCharucoBoard(
-                    charuco_corners, charuco_ids, charuco_board, camera_matrix, dist_coeffs, None, None
-                )
-
-                if success:
-                    print("ChArUco pose estimated successfully!")
-                    
-                    # Convert to 4x4 matrix
-                    T_target_in_cam = rtvec_to_matrix(rvec, tvec)
-                    # Saving target and robot poses
-
-                    R_gripper2base_list.append(T_gripper_in_base[0:3, 0:3]) 
-                    t_gripper2base_list.append(T_gripper_in_base[0:3, 3])   
-                    R_target2cam_list.append(T_target_in_cam[0:3, 0:3])
-                    t_target2cam_list.append(T_target_in_cam[0:3, 3])
-                    robot_poses.append(T_gripper_in_base)
-                    target_poses.append(T_target_in_cam)
-
-
-                    # Draw the detected corners and axes for visualization
-                    image_with_detections = aruco.drawDetectedCornersCharuco(image.copy(), charuco_corners, charuco_ids)
-                    cv2.drawFrameAxes(image_with_detections, camera_matrix, dist_coeffs, rvec, tvec, 0.1) # Draw a 10cm axis
-                    cv2.imshow('ChArUco Detection', image_with_detections)
-                    cv2.waitKey(500)
-                    print("Successfully stored data pair for this pose.")
-                else:
-                    print("Warning: Pose estimation for ChArUco board failed.")
-            else:
-                print("Warning: Not enough ChArUco corners interpolated to estimate pose.")
-        else:
-            print("Warning: No ArUco markers found in this image. Skipping pose.")
-            cv2.imshow('Detection Failed', image)
-    
-    
-    save_poses_to_file(robot_poses,"Set1Robot")
-    save_poses_to_file(target_poses,"Set1Camera")
-    calibrate_hand_eye(target_poses=target_poses,robot_poses=robot_poses)
-
-    # Clean up
-    #cv2.destroyAllWindows()
-    #pipeline.stop()
-    
-
-    cv2.waitKey(10)
 if __name__ == "Zivid testing":
     
     #camera paramteres

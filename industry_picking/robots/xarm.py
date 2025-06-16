@@ -20,20 +20,21 @@ from transforms3d import affines
 from transforms3d.euler import euler2mat 
 import cv2.aruco as aruco
 
-class xarm:
+class Xarm:
     def __init__(self,ip):
         self.ROBOT_IP = ip
         pass
-    def _connect_arm(self):
+    def connect(self):
         # # --- Initialize Robot Arm ---
         print("Initializing UFactory xArm...")
+        print(f"with the ip {self.ROBOT_ip}")
         arm = XArmAPI(self.ROBOT_IP)
         arm.connect()
         arm.motion_enable(enable=True)
         arm.set_mode(0) # Position control mode
         arm.set_state(state=0) # Ready state
         print("xArm Initialized.")
-    def _move_arm(self,pose: np.ndarray):
+    def move(self,pose: np.ndarray):
         x = pose[0, 3] * 1000
         y = pose[1, 3] * 1000
         z = pose[2, 3] * 1000
@@ -52,7 +53,7 @@ class xarm:
             wait=True,
         )
         time.sleep(1)
-    def get_tcp_pose(self):
+    def getPose(self):
         ok, pose = self._arm.get_position()
         if ok != 0:
             return None

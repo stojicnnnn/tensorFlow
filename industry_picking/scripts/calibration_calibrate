@@ -20,7 +20,7 @@ from transforms3d import affines
 from transforms3d.euler import euler2mat 
 import cv2.aruco as aruco
 
-def calibrate_hand_eye(target_poses,robot_poses):
+def caibrateHandEye(target_poses,robot_poses):
     target_rvecs, target_tvecs = [], []
     robot_rvecs, robot_tvecs = [], []
     for pose in robot_poses:
@@ -47,7 +47,7 @@ def calibrate_hand_eye(target_poses,robot_poses):
 
     calibration = np.vstack((np.hstack((rvec, tvec)), [0, 0, 0, 1]))
     print("Calibration matrix", calibration)
-def save_poses_to_file(poses: list, filename: str):
+def savePosesFile(poses: list, filename: str):
     try:
         with open(filename, 'w') as f:
             for i, pose_matrix in enumerate(poses):
@@ -59,7 +59,7 @@ def save_poses_to_file(poses: list, filename: str):
         print(f"\nSuccessfully saved {len(poses)} poses to '{filename}'")
     except Exception as e:
         print(f"\nAn error occurred while saving poses to file: {e}")
-def load_poses_from_file(filename: str) -> list:
+def loadPosesFile(filename: str) -> list:
     if not os.path.exists(filename):
         print(f"Error: Pose file not found at '{filename}'")
         return []
