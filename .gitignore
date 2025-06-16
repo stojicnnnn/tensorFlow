@@ -32,7 +32,7 @@ env/
 venv/
 ENV/
 VENV/
-
+/third-party/
 # IDE / Editor specific files
 .idea/
 .vscode/
