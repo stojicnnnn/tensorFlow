@@ -24,6 +24,14 @@
             "request": "launch",
             "module": "industry_picking.perception.perception"
         }
+        ,
+        {
+            "name": "Main test",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "industry_picking.point_cloud_handler"
+        }
+        ,
 
     ]
 }

@@ -1,25 +1,9 @@
-import rerun as rr
 import numpy as np
-import time
-import open3d as o3d
 import cv2 # For loading images (pip install opencv-python)
 import os # For os.path.exists if you use it, though not in current snippet
-import copy 
 import requests
-import matplotlib.pyplot as plt
-from scipy.spatial.transform import Rotation # For RPY conversion (pip install scipy)
 from typing import List, Tuple, Optional # For type hinting
-from dataclasses import dataclass
 import glob
-from xarm.wrapper import XArmAPI
-import pyrealsense2 as rs
-import math 
-from transforms3d import euler
-import glob # We'll use this for finding mask files
-from transforms3d import affines 
-from transforms3d.euler import euler2mat 
-import cv2.aruco as aruco
-
 
 def getSegmentationMasksSAM(
     rgb_image_path: str,
