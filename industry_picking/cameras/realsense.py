@@ -141,7 +141,7 @@ class Camera:
                 if success:
                     print("ChArUco pose estimated successfully!")     
                     # Convert to 4x4 matrix
-                    T_target_in_cam = self.rtvec_to_matrix(rvec, tvec)
+                    T_target_in_cam = self._rtvec_to_matrix(rvec, tvec)
 
                     # Saving target pose
                     target_poses.append(T_target_in_cam)
