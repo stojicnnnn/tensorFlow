@@ -17,9 +17,9 @@ def calibrateHandEye(target_poses,robot_poses):
             robot_tvecs.append(tvec)
 
         for pose in target_poses:
-            pose_np = np.array(pose) 
+            pose_np = np.array(pose).reshape(4, 4)
             R, _ = cv2.Rodrigues(pose_np[:3, :3])
-            tvec = pose[:3, 3]
+            tvec = pose_np[:3, 3]
             target_rvecs.append(R)
             target_tvecs.append(tvec)
 
