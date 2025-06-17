@@ -3,6 +3,8 @@ import open3d as o3d
 import cv2 # For loading images (pip install opencv-python)
 import os # For os.path.exists if you use it, though not in current snippet
 from scipy.spatial.transform import Rotation # For RPY conversion (pip install scipy)
+from transforms3d.euler import euler2mat 
+
 
 def calibrateHandEye(target_poses,robot_poses):
         target_rvecs, target_tvecs = [], []
@@ -11,12 +13,12 @@ def calibrateHandEye(target_poses,robot_poses):
             T_inv =  np.linalg.inv(pose)
             R, _ = cv2.Rodrigues(T_inv[:3, :3])
             tvec = T_inv[:3, 3]
-
             robot_rvecs.append(R)
             robot_tvecs.append(tvec)
 
         for pose in target_poses:
-            R, _ = cv2.Rodrigues(pose[:3, :3])
+            pose_np = np.array(pose) 
+            R, _ = cv2.Rodrigues(pose_np[:3, :3])
             tvec = pose[:3, 3]
             target_rvecs.append(R)
             target_tvecs.append(tvec)
@@ -31,7 +33,73 @@ def calibrateHandEye(target_poses,robot_poses):
 
         calibration = np.vstack((np.hstack((rvec, tvec)), [0, 0, 0, 1]))
         print("Calibration matrix", calibration)
+def create_pose_matrix(x_mm, y_mm, z_mm, roll_deg, pitch_deg, yaw_deg):
+        # Convert the Euler angles from degrees to radians
+        roll_rad = np.deg2rad(roll_deg)
+        pitch_rad = np.deg2rad(pitch_deg)
+        yaw_rad = np.deg2rad(yaw_deg)
 
+        # Create the 3x3 rotation matrix from the Euler angles
+        # 'sxyz' is a common convention for roll, pitch, yaw
+        rotation_matrix = euler2mat(roll_rad, pitch_rad, yaw_rad, axes='sxyz')
+
+        # ---- 2. Handle the Position ----
+        # Create the position vector and convert it from millimeters to meters
+        position_vector_meters = np.array([x_mm, y_mm, z_mm]) / 1000.0
+
+        # ---- 3. Assemble the final 4x4 Pose Matrix ----
+        # Start with a 4x4 identity matrix (a clean slate)
+        pose_matrix = np.identity(4)
+
+        # Place the 3x3 rotation matrix in the top-left corner
+        pose_matrix[:3, :3] = rotation_matrix
+
+        # Place the converted position vector in the last column
+        pose_matrix[:3, 3] = position_vector_meters
+
+        return pose_matrix 
+def generate_hand_eye_test_data():
+    """
+    Generates a synthetic dataset for testing hand-eye calibration.
+    """
+    print("--- Generating Synthetic Test Data for Hand-Eye Calibration ---")
+    
+    # --- Step 1: Define the "Golden" Ground Truth Transformation ---
+    # This is the matrix we want our calibration to find.
+    # Let's assume the camera is 0.5m above the robot base, rotated 180 deg around Z.
+    T_base_to_camera_GOLDEN = create_pose_matrix(x_mm=0.5, y_mm=0.1, z_mm=0.15, roll_deg=0, pitch_deg=0, yaw_deg=180)
+    print("\n[Ground Truth] Golden Hand-Eye Matrix:\n", np.round(T_base_to_camera_GOLDEN, 2))
+
+    # --- Step 2: Define the Fixed Offset from Gripper (TCP) to Target ---
+    # This represents how the calibration board is attached to the robot's gripper.
+    # Let's say the board is 10cm in front of the gripper.
+    T_tcp_to_target_FIXED = create_pose_matrix(x_mm=0.1, y_mm=0, z_mm=0, roll_deg=0, pitch_deg=0, yaw_deg=0)
+    print("\n[Fixed Offset] TCP to Target Matrix:\n", np.round(T_tcp_to_target_FIXED, 2))
+
+    # --- Step 3: Generate a Set of Simulated Robot Poses ---
+    # These are the poses of the robot's TCP relative to its base.
+    # In a real test, you would have more complex and varied poses.
+    robot_poses = [
+        create_pose_matrix(x_mm=0.3, y_mm=0.1, z_mm=0.2, roll_deg=10, pitch_deg=0, yaw_deg=20),
+        create_pose_matrix(x_mm=0.4, y_mm=-0.1, z_mm=0.3, roll_deg=-10, pitch_deg=15, yaw_deg=0),
+        create_pose_matrix(x_mm=0.5, y_mm=0.0, z_mm=0.4, roll_deg=20, pitch_deg=-15, yaw_deg=-20),
+        create_pose_matrix(x_mm=0.3, y_mm=0.2, z_mm=0.2, roll_deg=0, pitch_deg=25, yaw_deg=30)
+    ]
+    print(f"\nGenerated {len(robot_poses)} simulated robot poses.")
+
+    # --- Step 4: Calculate the Corresponding "Perfect" Target Poses ---
+    # For each robot pose, calculate what the camera should see.
+    # The formula is: T_cam_to_target = inv(T_base_to_cam) * T_base_to_tcp * T_tcp_to_target
+    target_poses = []
+    T_camera_to_base_GOLDEN = np.linalg.inv(T_base_to_camera_GOLDEN) # We need the inverse for the calculation
+    
+    for robot_pose in robot_poses:
+        # This calculates the pose of the target relative to the camera
+        target_pose = T_camera_to_base_GOLDEN @ robot_pose @ T_tcp_to_target_FIXED
+        target_poses.append(target_pose)
+    print(f"Calculated {len(target_poses)} corresponding target poses for the camera to see.")
+
+    return robot_poses, target_poses, T_base_to_camera_GOLDEN
 def savePosesFile(poses: list, filename: str):
         try:
             with open(filename, 'w') as f:
