@@ -119,7 +119,7 @@ class Camera:
         camera_matrix,dist_coeffs = self.getIntrinsics()
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        corners, ids, rejected_img_points = aruco.detectMarkers(gray, self.CHARUCO_DICTIONARY, parameters=aruco_params)
+        corners, ids, rejected_img_points = aruco.detectMarkers(gray,charuco_dictionary, parameters=aruco_params)
 
         if ids is not None and len(ids) > 0:
             print(f"Found {len(ids)} ArUco markers. Interpolating ChArUco corners...")
