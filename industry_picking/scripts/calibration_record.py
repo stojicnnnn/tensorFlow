@@ -28,7 +28,6 @@ if __name__ == "__main1__":
     target_poses = help.loadPosesFile("Set1Camera")
     robot_poses = help.loadPosesFile("Set1Robot")
     help.calibrateHandEye(target_poses=target_poses,robot_poses=robot_poses)
-    print("тест")
 
 
         
