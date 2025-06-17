@@ -2,11 +2,10 @@ import rerun as rr
 import numpy as np
 from scipy.spatial.transform import Rotation # For RPY conversion (pip install scipy)
 import industry_picking.perception.pose_esimator as pest
+import time
+import pyrealsense2 as rs
 
-
-
-
-if __name__ == "__main__":
+if __name__ == "__main__1":
     
     #camera paramteres
     image_width_for_intrinsics = 1224

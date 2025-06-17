@@ -27,7 +27,7 @@ class Xarm:
     def connect(self):
         # # --- Initialize Robot Arm ---
         print("Initializing UFactory xArm...")
-        print(f"with the ip {self.ROBOT_ip}")
+        print(f"with the ip {self.ROBOT_IP}")
         self.arm = XArmAPI(self.ROBOT_IP)
         self.arm.connect()
         self.arm.motion_enable(enable=True)
@@ -35,6 +35,7 @@ class Xarm:
         self.arm.set_state(state=0) # Ready state
         print("xArm Initialized.")
     def move(self,pose: np.ndarray):
+        print(f"Moving robot to pose: {pose}")
         x = pose[0, 3] * 1000
         y = pose[1, 3] * 1000
         z = pose[2, 3] * 1000
@@ -63,6 +64,7 @@ class Xarm:
         rotation = euler.euler2mat(
             eulers[0], eulers[1], eulers[2], 'sxyz')
         pose = affines.compose(translation, rotation, np.ones(3))
+        print("Retrieved robot pose.")
         return pose
     def create_pose_matrix(self,x_mm, y_mm, z_mm, roll_deg, pitch_deg, yaw_deg):
         # Convert the Euler angles from degrees to radians

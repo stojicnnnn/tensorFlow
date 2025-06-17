@@ -26,17 +26,32 @@ class Camera:
     def __init__(self,width,height):
         self.width = width
         self.height = height
+        self.pipeline = None
+        self.config = None
+
         print(f"RealSense instance created with a resolution of {width}x{height}.")
     def test(self):
         print("Test success!")
     def connect(self):
         print("Initializing Intel RealSense Camera...")
-        pipeline = rs.pipeline()
-        config = rs.config()
-        config.enable_stream(rs.stream.color, self.width , self.height, rs.format.bgr8, 30)
-        pipeline.start(config)
-        print("RealSense Camera Initialized.")
-        time.sleep(2) # Give camera time to auto-adjust exposure, etc. 
+        
+        # Assign to the instance attributes using 'self'
+        self.pipeline = rs.pipeline()
+        self.config = rs.config()
+        
+        # Use the instance attributes to configure and start the stream
+        self.config.enable_stream(rs.stream.color, 1920, 1080, rs.format.bgr8, 30)
+        
+        try:
+            self.pipeline.start(self.config)
+            print("RealSense Camera Initialized and pipeline started.")
+            # Give camera time to auto-adjust
+            time.sleep(2)
+        except RuntimeError as e:
+            print(f"Error starting RealSense pipeline: {e}")
+            print("This usually means the requested resolution is unsupported or the camera is not connected.")
+            self.pipeline = None # Reset on failure
+
     def _rtvec_to_matrix(self,rvec, tvec):
         """Converts a rotation vector and a translation vector to a 4x4 transformation matrix."""
         rotation_matrix, _ = cv2.Rodrigues(rvec) # _ to ignore the Jakobian that cv2.Rodrigues returnes
@@ -45,39 +60,35 @@ class Camera:
         transformation_matrix[0:3, 3] = tvec.flatten() #flatten makes sure that we get a simple 2d array 1x3 and not 3x1
         return transformation_matrix
     def getIntrinsics(self):
-        
-        # Returns camera matrix with color intrinsics as well as distrortion coeffs
-        pipeline = rs.pipeline()
-        config = rs.config()
-        config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-        config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-        # 3. Call start() on the pipeline INSTANCE, passing the config INSTANCE
-        profile = pipeline.start(config)
-        try:
-            # Get the active stream profiles from the started profile object
-            depth_profile = profile.get_stream(rs.stream.depth)
-            color_profile = profile.get_stream(rs.stream.color)
+        """
+        Gets the intrinsics from the active color stream.
+        This method MUST be called after connect().
+        """
+        if not self.pipeline:
+            print("Error: Cannot get intrinsics, pipeline is not active. Call connect() first.")
+            return None, None
 
-            # Downcast the profile to a video_stream_profile and get intrinsics
-            depth_intrinsics = depth_profile.as_video_stream_profile().get_intrinsics()
-            color_intrinsics = color_profile.as_video_stream_profile().get_intrinsics()
+        try:
+            # Get the profile from the already active pipeline
+            profile = self.pipeline.get_active_profile()
+            color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
+            color_intrinsics = color_profile.get_intrinsics()
 
             camera_matrix = np.array([
-            [color_intrinsics.fx, 0, color_intrinsics.ppx],
-            [0, color_intrinsics.fy, color_intrinsics.ppy],
-            [0, 0, 1]
+                [color_intrinsics.fx, 0, color_intrinsics.ppx],
+                [0, color_intrinsics.fy, color_intrinsics.ppy],
+                [0, 0, 1]
             ], dtype=np.float32)
 
             dist_coeffs = np.array(color_intrinsics.coeffs, dtype=np.float32)
+            
+            return camera_matrix, dist_coeffs
+        except Exception as e:
+            print(f"An error occurred while getting intrinsics: {e}")
+            return None, None
 
-            return camera_matrix,dist_coeffs
-
-        finally:
-            # 4. Call stop() on the pipeline INSTANCE
-            pipeline.stop()
-            print("\nGot camera intrinsics.")
     def captureImage(self):
-        frames = rs.pipeline.wait_for_frames()
+        frames = self.pipeline.wait_for_frames()
         color_frame = frames.get_color_frame()
         if not color_frame:
             print("Warning: Could not get color frame. Skipping this pose.")
@@ -105,7 +116,7 @@ class Camera:
         # Lists for storing robot and board poses
         target_poses = []
         # Getting the camera intrinsics
-        camera_matrix,dist_coeffs = self.get_cam_intrinsics()
+        camera_matrix,dist_coeffs = self.getIntrinsics()
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         corners, ids, rejected_img_points = aruco.detectMarkers(gray, self.CHARUCO_DICTIONARY, parameters=aruco_params)

@@ -4,6 +4,71 @@ import cv2 # For loading images (pip install opencv-python)
 import os # For os.path.exists if you use it, though not in current snippet
 from scipy.spatial.transform import Rotation # For RPY conversion (pip install scipy)
 
+def calibrateHandEye(target_poses,robot_poses):
+        target_rvecs, target_tvecs = [], []
+        robot_rvecs, robot_tvecs = [], []
+        for pose in robot_poses:
+            T_inv =  np.linalg.inv(pose)
+            R, _ = cv2.Rodrigues(T_inv[:3, :3])
+            tvec = T_inv[:3, 3]
+
+            robot_rvecs.append(R)
+            robot_tvecs.append(tvec)
+
+        for pose in target_poses:
+            R, _ = cv2.Rodrigues(pose[:3, :3])
+            tvec = pose[:3, 3]
+            target_rvecs.append(R)
+            target_tvecs.append(tvec)
+
+        rvec, tvec = cv2.calibrateHandEye(
+            robot_rvecs,
+            robot_tvecs,
+            target_rvecs,
+            target_tvecs,
+            method=cv2.CALIB_HAND_EYE_PARK,
+        )
+
+        calibration = np.vstack((np.hstack((rvec, tvec)), [0, 0, 0, 1]))
+        print("Calibration matrix", calibration)
+
+def savePosesFile(poses: list, filename: str):
+        try:
+            with open(filename, 'w') as f:
+                for i, pose_matrix in enumerate(poses):
+                    # Save each matrix to the file
+                    np.savetxt(f, pose_matrix, fmt='%.8f')
+                    # Add a separator line between matrices (unless it's the last one)
+                    if i < len(poses) - 1:
+                        f.write('\n')
+            print(f"\nSuccessfully saved {len(poses)} poses to '{filename}'")
+        except Exception as e:
+            print(f"\nAn error occurred while saving poses to file: {e}")
+def loadPosesFile(filename: str) -> list:
+        if not os.path.exists(filename):
+            print(f"Error: Pose file not found at '{filename}'")
+            return []
+            
+        try:
+            # Load the entire file content as a single array
+            # The blank lines will be treated as delimiters by fromstring
+            with open(filename, 'r') as f:
+                content = f.read()
+            # Create an array from the string content, then reshape
+            # Each matrix is 4x4 = 16 numbers.
+            poses_flat = np.fromstring(content, sep=' ')
+            num_matrices = len(poses_flat) // 16
+            if len(poses_flat) % 16 != 0:
+                print("Warning: File content is not a multiple of 16. The file might be corrupted.")
+            
+            # Reshape the flat array into a list of 4x4 matrices
+            poses = poses_flat.reshape(num_matrices, 4, 4)
+            print(f"\nSuccessfully loaded {len(poses)} poses from '{filename}'")
+            return list(poses) # Convert the top-level array to a list
+            
+        except Exception as e:
+            print(f"\nAn error occurred while loading poses from file: {e}")
+            return []
 def generate_charuco(ARUCO_DICT= cv2.aruco.DICT_6X6_250,
                      SQUARES_VERTICALLY= 6,SQUARES_HORIZONTALLY= 7,
                      SQUARE_LENGTH= 0.03,MARKER_LENGTH = 0.02,
