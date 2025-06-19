@@ -1,52 +1,60 @@
 import zivid
+import numpy as np
+import cv2
+import zivid.experimental
+import zivid.experimental.calibration
+
+def connect_to_zivid_camera():
+    """
+    Connects to the first available Zivid camera.
+
+    Returns:
+        zivid.Camera: The connected camera object.
+    """
+    try:
+        app = zivid.Application()
+        print("Connecting to camera...")
+        camera = app.connect_camera()
+        print(f"Connected to camera: {camera.info.model_name}")
+        return camera
+    except RuntimeError as e:
+        print(f"Error connecting to camera: {e}")
+        return None
 
 
-class Zivid:
-    def __init__(self, width = 1224, height = 1024):
-        # --- Store the core camera properties ---
-        self.width = width
-        self.height = height
-        # --- You can initialize other things here ---
-        self.camera_handle = None # Placeholder for the actual Zivid camera connection
-        self.is_connected = False
-        self.app = None
+def get_camera_intrinsics_from_capture(camera: zivid.Camera):
+    """
+    Captures a frame and retrieves the camera intrinsics from that frame.
 
-        print(f"ZividCamera instance created for a {width}x{height} camera.")
-    def subsampledSettingsForCamera(camera: zivid.Camera) -> zivid.Settings:
-        settings_subsampled = zivid.Settings(
-        acquisitions=[zivid.Settings.Acquisition()],
-        color=zivid.Settings2D(acquisitions=[zivid.Settings2D.Acquisition()]),
-        )
-        model = camera.info.model
-        if (
-        model is zivid.CameraInfo.Model.zividTwo
-        or model is zivid.CameraInfo.Model.zividTwoL100
-        or model is zivid.CameraInfo.Model.zivid2PlusM130
-        or model is zivid.CameraInfo.Model.zivid2PlusM60
-        or model is zivid.CameraInfo.Model.zivid2PlusL110
-        ):
-            settings_subsampled.sampling.pixel = zivid.Settings.Sampling.Pixel.blueSubsample2x2
-            settings_subsampled.color.sampling.pixel = zivid.Settings2D.Sampling.Pixel.blueSubsample2x2
-        elif (
-        model is zivid.CameraInfo.Model.zivid2PlusMR130
-        or model is zivid.CameraInfo.Model.zivid2PlusMR60
-        or model is zivid.CameraInfo.Model.zivid2PlusLR110
-        ):
-            settings_subsampled.sampling.pixel = zivid.Settings.Sampling.Pixel.by2x2
-            settings_subsampled.color.sampling.pixel = zivid.Settings2D.Sampling.Pixel.by2x2
-        else:
-            raise ValueError(f"Unhandled enum value {model}")
+    Args:
+        camera: An active Zivid camera object.
+    """
+    if not camera:
+        print("No camera connected.")
+        return
 
-        return settings_subsampled        
-    def connect(self):
-        self.app = zivid.Application()
-        print("Connecting to camera")
-        camera = self.app.connect_camera()
+    print("\n--- Capturing a frame to get intrinsics ---")
+    
+    # Define capture settings. You can adjust these as needed.
+    # For a Zivid 2+ M60, you might want to specify an aperture.
+    # If no f-number is specified, the SDK will choose one.
+    settings = zivid.Settings(acquisitions=[zivid.Settings.Acquisition()])
 
-        print("Getting camera intrinsics")
-        intrinsics = zivid.experimental.calibration.intrinsics(camera)
+    # Capture a frame
+    with camera.capture(settings) as frame:
+        print("Frame captured. Retrieving intrinsics...")
+        
+        # Intrinsics are an attribute of the captured frame
+        intrinsics = zivid.experimental.calibration.estimate_intrinsics(frame)
+        #intrinsics = zivid.experimental.calibration.estimate_intrinsics(frame)
+
         print(intrinsics)
 
-        output_file = "Intrinsics.yml"
-        print(f"Saving camera intrinsics to file: {output_file}")
-        intrinsics.save(output_file)
+        # The intrinsics object contains the camera matrix and distortion coefficients
+        camera_matrix = intrinsics.camera_matrix
+        distortion_coeffs = intrinsics.distortion
+
+        print("\nCamera Matrix (OpenCV format):")
+        print(camera_matrix)
+        print("\nDistortion Coefficients (OpenCV format):")
+        print(distortion_coeffs)

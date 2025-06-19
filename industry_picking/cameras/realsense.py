@@ -10,14 +10,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation # For RPY conversion (pip install scipy)
 from typing import List, Tuple, Optional # For type hinting
 from dataclasses import dataclass
-import glob
-from xarm.wrapper import XArmAPI
 import pyrealsense2 as rs
-import math 
-from transforms3d import euler
-import glob # We'll use this for finding mask files
-from transforms3d import affines 
-from transforms3d.euler import euler2mat 
 import cv2.aruco as aruco
 
 
@@ -86,7 +79,6 @@ class Camera:
         except Exception as e:
             print(f"An error occurred while getting intrinsics: {e}")
             return None, None
-
     def captureImage(self):
         frames = self.pipeline.wait_for_frames()
         color_frame = frames.get_color_frame()
@@ -159,5 +151,5 @@ class Camera:
         else:
             print("Warning: No ArUco markers found in this image. Skipping pose.")
             cv2.imshow('Detection Failed', image)
-        return target_poses
+        return T_target_in_cam
         
