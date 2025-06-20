@@ -4,6 +4,7 @@ import cv2 # For loading images (pip install opencv-python)
 import os # For os.path.exists if you use it, though not in current snippet
 from scipy.spatial.transform import Rotation # For RPY conversion (pip install scipy)
 from transforms3d.euler import euler2mat 
+import rerun as rr
 
 
 def calibrateHandEye(target_poses,robot_poses):
@@ -225,3 +226,45 @@ def convert_rgbd_to_pointcloud(rgb, depth, intrinsic_matrix, extrinsic=None):
         rgbd_image, intrinsic_matrix, extrinsic 
     )
     return point_cloud
+
+def log_o3d_point_cloud_to_rerun(
+    pcd: o3d.geometry.PointCloud,
+    entity_path: str,
+    point_radius: float = 0.002
+):
+    """
+    Logs an Open3D point cloud to a Rerun session.
+
+    Args:
+        pcd (o3d.geometry.PointCloud): The Open3D point cloud object to log.
+        entity_path (str): The path to log the point cloud to in Rerun
+                           (e.g., "world/combined_point_cloud").
+        point_radius (float): The radius to use for visualizing the points.
+    """
+    if not isinstance(pcd, o3d.geometry.PointCloud):
+        print("Error: Input is not a valid Open3D PointCloud object.")
+        return
+
+    if not pcd.has_points():
+        print(f"Warning: Point cloud for entity '{entity_path}' has no points. Nothing to log.")
+        return
+
+    # Extract points and convert to NumPy array
+    points = np.asarray(pcd.points)
+
+    # Extract colors if they exist, otherwise Rerun will use a default
+    colors = None
+    if pcd.has_colors():
+        # Convert colors from [0, 1] float to [0, 255] uint8
+        colors = (np.asarray(pcd.colors) * 255).astype(np.uint8)
+
+    # Log to Rerun using rr.Points3D
+    rr.log(
+        entity_path,
+        rr.Points3D(
+            positions=points,
+            colors=colors,
+            radii=point_radius
+        )
+    )
+    print(f"Logged point cloud with {len(points)} points to Rerun entity '{entity_path}'.")

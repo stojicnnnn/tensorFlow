@@ -2,9 +2,49 @@ import rerun as rr
 import numpy as np
 from scipy.spatial.transform import Rotation # For RPY conversion (pip install scipy)
 import industry_picking.perception.pose_esimator as pest
-import time
 import pyrealsense2 as rs
+import os
+import open3d as o3d
+import copy
+import time
 
+if __name__ == '__main__':
+    # --- Setup Rerun and Dummy Data ---
+    rr.init("object_model_fusion_demo", spawn=True)
+    
+    SCAN_DIR = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\testSample"
+    VOXEL_SIZE = 0.002 # 5mm - This is the most important parameter to tune!
+
+    # Create dummy data if it doesn't exist
+    if not os.path.exists(SCAN_DIR):
+        print("Creating dummy scan data...")
+        os.makedirs(SCAN_DIR)
+        # Create a base sphere
+        base_mesh = o3d.geometry.TriangleMesh.create_sphere(radius=0.1)
+        base_mesh.compute_vertex_normals()
+        
+        # Generate several "scans" by rotating and sampling the sphere
+        for i in range(4):
+            rotation = o3d.geometry.get_rotation_matrix_from_xyz((
+                np.random.rand() * 0.8,
+                np.random.rand() * 0.8,
+                i * np.pi / 2
+            ))
+            scan_mesh = copy.deepcopy(base_mesh).rotate(rotation, center=(0,0,0))
+            pcd = scan_mesh.sample_points_uniformly(number_of_points=5000)
+            pcd.paint_uniform_color(np.random.rand(3)) # Color each scan differently
+            o3d.io.write_point_cloud(os.path.join(SCAN_DIR, f"scan_{i}.ply"), pcd)
+
+    # --- Run the Fusion ---
+    final_fused_pcd = pest.fuse_multiple_scans(
+        scan_directory=SCAN_DIR,
+        voxel_size=VOXEL_SIZE,
+        rerun_entity_path="world/fused_object"
+    )
+    time.sleep(60)
+        
+        
+    
 if __name__ == "__main__1":
     
     #camera paramteres

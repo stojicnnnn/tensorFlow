@@ -110,7 +110,8 @@ def generate_waypoints(
     depth_scale_to_meters: float = 1000.0,
     rerun_visualization: bool = False,
     masks_output_dir: Optional[str] = None,
-    masks_input_dir: Optional[str] = None
+    masks_input_dir: Optional[str] = None,
+    pcd_output_dir: Optional[str] = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\testSample"
 ) -> List[np.ndarray]:
     """
     Generates waypoints by segmenting objects, creating point clouds, and registering them.
@@ -235,6 +236,16 @@ def generate_waypoints(
         if pcd_instance_camera_frame is None or not pcd_instance_camera_frame.has_points():
             print(f"Failed to generate point cloud for instance {instance_index}. Skipping.")
             continue
+        
+        
+        # *** ADDED: Save the generated point cloud if an output directory is provided ***
+        if pcd_output_dir:
+            pcd_filename = f"instance_{instance_index}_point_cloud.ply"
+            full_pcd_path = os.path.join(pcd_output_dir, pcd_filename)
+            o3d.io.write_point_cloud(full_pcd_path, pcd_instance_camera_frame)
+            print(f"Saved generated point cloud to: {full_pcd_path}")
+        
+        
         if rerun_visualization:
             colors_for_rr = (np.asarray(pcd_instance_camera_frame.colors) * 255).astype(np.uint8) if pcd_instance_camera_frame.has_colors() else None
             rr.log(f"world/instance_{instance_index}/segmented_pcd_camera_frame", rr.Points3D(positions=np.asarray(pcd_instance_camera_frame.points), colors=colors_for_rr))
@@ -294,3 +305,105 @@ def generate_waypoints(
         print(f"\nSuccessfully generated {len(waypoints)} waypoint(s).")
         
     return waypoints
+
+def fuse_multiple_scans(
+    scan_directory: str,
+    voxel_size: float,
+    rerun_entity_path: str = "world/fused_object"
+) -> Optional[o3d.geometry.PointCloud]:
+    """
+    Loads multiple scans of a single object, registers them sequentially,
+    and fuses them into a single high-density point cloud.
+
+    Args:
+        scan_directory (str): Directory containing the point cloud scans (.ply or .pcd).
+        voxel_size (float): The voxel size used for registration and final cleanup.
+                            This is a critical parameter.
+        rerun_entity_path (str): The base entity path for Rerun visualization.
+
+    Returns:
+        The final fused and cleaned Open3D PointCloud object, or None if failed.
+    """
+    """
+    Loads multiple scans, registers them, and fuses them into a single point cloud.
+
+    Args:
+        scan_directory (str): Directory containing the point cloud scans.
+        voxel_size (float): The voxel size for registration and cleanup.
+        rerun_entity_path (str): Base entity path for Rerun visualization.
+        point_radius (Optional[float]): The visual radius of points in Rerun.
+                                         Defaults to 40% of the voxel size.
+    """
+    # --- Set a default for the new parameter ---
+    point_radius = voxel_size * 0.2
+
+    scan_files = sorted([f for f in os.listdir(scan_directory) if f.endswith(('.ply', '.pcd'))])
+    if len(scan_files) < 2:
+        print("Error: Need at least two scans to perform fusion.")
+        return None
+
+    all_scans = []
+    for filename in scan_files:
+        pcd = o3d.io.read_point_cloud(os.path.join(scan_directory, filename))
+        if pcd.has_points():
+            all_scans.append(pcd)
+
+    fused_pcd = all_scans.pop(0)
+    rr.log(f"{rerun_entity_path}/steps/00_base_model", rr.Points3D(
+        positions=np.asarray(fused_pcd.points),
+        colors=np.asarray(fused_pcd.colors) if fused_pcd.has_colors() else None,
+        radii=point_radius  # <-- APPLIED HERE
+    ))
+
+    for i, source_pcd in enumerate(all_scans):
+        step_index = i + 1
+        print(f"\n--- Processing Scan {step_index+1}/{len(all_scans)+1} ---")
+        
+        target_pcd = fused_pcd
+        
+        rr.log(f"{rerun_entity_path}/steps/{step_index:02d}_source_unaligned", rr.Points3D(
+            positions=np.asarray(source_pcd.points), colors=[255, 0, 0],
+            radii=point_radius # <-- APPLIED HERE
+        ))
+        
+        source_down, source_fpfh = preprocess_point_cloud(source_pcd, voxel_size)
+        target_down, target_fpfh = preprocess_point_cloud(target_pcd, voxel_size)
+
+        coarse_reg_result = execute_global_registration(
+            source_down, target_down, source_fpfh, target_fpfh, voxel_size
+        )
+
+        fine_reg_result = refine_registration_icp(
+            source_down, target_down, coarse_reg_result.transformation, voxel_size
+        )
+        
+        transformation_matrix = fine_reg_result.transformation
+
+        source_pcd_transformed = copy.deepcopy(source_pcd)
+        source_pcd_transformed.transform(transformation_matrix)
+        
+        rr.log(f"{rerun_entity_path}/steps/{step_index:02d}_source_aligned", rr.Points3D(
+            positions=np.asarray(source_pcd_transformed.points), colors=[0, 255, 0],
+            radii=point_radius # <-- APPLIED HERE
+        ))
+
+        fused_pcd += source_pcd_transformed
+        fused_pcd = fused_pcd.voxel_down_sample(voxel_size)
+
+        rr.log(f"{rerun_entity_path}/steps/{step_index:02d}_fused_progressive", rr.Points3D(
+            positions=np.asarray(fused_pcd.points),
+            colors=np.asarray(fused_pcd.colors) if fused_pcd.has_colors() else None,
+            radii=point_radius # <-- APPLIED HERE
+        ))
+
+    print("\n--- Fusion Complete. Performing final cleanup. ---")
+    final_pcd = fused_pcd # Already downsampled in the loop
+    print(f"Final model has {len(final_pcd.points)} points.")
+
+    rr.log(f"{rerun_entity_path}/final_model", rr.Points3D(
+        positions=np.asarray(final_pcd.points),
+        colors=np.asarray(final_pcd.colors) if final_pcd.has_colors() else None,
+        radii=point_radius # <-- APPLIED HERE
+    ))
+    
+    return final_pcd
