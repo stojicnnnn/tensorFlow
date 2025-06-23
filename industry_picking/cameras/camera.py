@@ -3,6 +3,7 @@ import time
 import cv2 # For loading images (pip install opencv-python)
 import pyrealsense2 as rs
 import cv2.aruco as aruco
+import zivid 
 
 
 
@@ -76,18 +77,18 @@ class Zivid(Camera):
     """A subclass for Zivid cameras."""
     def __init__(self, width, height):
         super().__init__(width, height)
-
-
-
+        self.app = zivid.Application()
         print("Zivid camera instance created.")
 
     def connect(self):
-
-
-
-
-        print("Connecting to Zivid camera...")
-        pass
+        try:
+            print("Connecting to camera...")
+            camera = self.app.connect_camera()
+            print(f"Connected to camera: {camera.info.model_name}")
+            return camera
+        except RuntimeError as e:
+            print(f"Error connecting to camera: {e}")
+            return None            
 
     def getIntrinsics(self):
         pass
