@@ -4,7 +4,7 @@ import cv2 # For loading images (pip install opencv-python)
 import pyrealsense2 as rs
 import cv2.aruco as aruco
 import zivid 
-
+import industry_picking.utils.helper_functions as help
 
 
 class Camera:
@@ -83,18 +83,39 @@ class Zivid(Camera):
     def connect(self):
         try:
             print("Connecting to camera...")
-            camera = self.app.connect_camera()
-            print(f"Connected to camera: {camera.info.model_name}")
-            return camera
+            self.camera = self.app.connect_camera()
+            print(f"Connected to camera: {self.camera.info.model_name}")
+            return self.camera
         except RuntimeError as e:
             print(f"Error connecting to camera: {e}")
             return None            
 
     def getIntrinsics(self):
-        pass
+        if not self.camera:
+            print("No camera connected.")
+            return
 
+        print("\n--- Capturing a frame to get intrinsics ---")
+        settings = zivid.Settings(acquisitions=[zivid.Settings.Acquisition()])
 
+        # Capture a frame
+        with self.camera.capture(settings) as frame:
+            print("Frame captured. Retrieving intrinsics...")
+            
+            # Intrinsics are an attribute of the captured frame
+            intrinsics = zivid.experimental.calibration.estimate_intrinsics(frame)
+            #intrinsics = zivid.experimental.calibration.estimate_intrinsics(frame)
 
+            print(intrinsics)
+
+            # The intrinsics object contains the camera matrix and distortion coefficients
+            camera_matrix = intrinsics.camera_matrix
+            distortion_coeffs = intrinsics.distortion
+
+            print("\nCamera Matrix (OpenCV format):")
+            print(camera_matrix)
+            print("\nDistortion Coefficients (OpenCV format):")
+            print(distortion_coeffs)
 
     def captureImage(self):
         pass
@@ -112,8 +133,10 @@ class RealSense(Camera):
         self.pipeline = rs.pipeline()
         self.config = rs.config()
         self.config.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, 30)
+        self.config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, 30)
+
         try:
-            self.pipeline.start(self.config)
+            self.profile = self.pipeline.start(self.config)            
             print("RealSense Camera Initialized and pipeline started.")
             time.sleep(2)  # Allow for auto-adjustment
         except RuntimeError as e:
@@ -123,7 +146,7 @@ class RealSense(Camera):
     def getIntrinsics(self):
         if not self.pipeline:
             print("Error: Pipeline not active. Call connect() first.")
-            return None, None
+            return None
         try:
             profile = self.pipeline.get_active_profile()
             color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
@@ -143,20 +166,55 @@ class RealSense(Camera):
         if not self.pipeline:
             print("Error: Pipeline not active. Call connect() first.")
             return None
-        try:
-            frames = self.pipeline.wait_for_frames()
-            color_frame = frames.get_color_frame()
-            if not color_frame:
-                print("Warning: Could not get color frame.")
-                return None
-            image = np.asanyarray(color_frame.get_data())
-            print("Captured RealSense camera image.")
-            return image
-        except Exception as e:
-            print(f"Failed to capture image: {e}")
-            return None
+        
+        frames = self.pipeline.wait_for_frames()
+        # Getting the depth sensor's depth scale (see rs-align example for explanation)
+        depth_sensor = self.profile.get_device().first_depth_sensor()
+        depth_scale = depth_sensor.get_depth_scale()
+        print("Depth Scale is: " , depth_scale)
 
-    def __del__(self):
-        if self.pipeline:
+        # We will be removing the background of objects more than
+        #  clipping_distance_in_meters meters away
+        clipping_distance_in_meters = 0.2 #1 meter
+        clipping_distance = clipping_distance_in_meters / depth_scale
+
+        # Create an align object
+        # rs.align allows us to perform alignment of depth frames to others frames
+        # The "align_to" is the stream type to which we plan to align depth frames.
+        align_to = rs.stream.color
+        align = rs.align(align_to)
+
+        # Streaming loop
+        try:
+            while True:
+                # Get frameset of color and depth
+                frames = self.pipeline.wait_for_frames()
+                # frames.get_depth_frame() is a 640x360 depth image
+
+                # Align the depth frame to color frame
+                aligned_frames = align.process(frames)
+
+                # Get aligned frames
+                aligned_depth_frame = aligned_frames.get_depth_frame() # aligned_depth_frame is a 640x480 depth image
+                color_frame = aligned_frames.get_color_frame()
+
+                # Validate that both frames are valid
+                if not aligned_depth_frame or not color_frame:
+                    continue
+
+                depth_image = np.asanyarray(aligned_depth_frame.get_data())
+                color_image = np.asanyarray(color_frame.get_data())
+
+                # Remove background - Set pixels further than clipping_distance to grey
+                grey_color = 153
+                depth_image_3d = np.dstack((depth_image,depth_image,depth_image)) #depth image is 1 channel, color is 3 channels
+                bg_removed = np.where((depth_image_3d > clipping_distance) | (depth_image_3d <= 0), grey_color, color_image)
+                depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
+                images = np.hstack((bg_removed, depth_colormap))
+                
+
+                cv2.waitKey(1)
+                return color_image, depth_image
+
+        finally:
             self.pipeline.stop()
-            print("RealSense pipeline stopped.")

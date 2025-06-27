@@ -5,6 +5,7 @@ import os # For os.path.exists if you use it, though not in current snippet
 from scipy.spatial.transform import Rotation # For RPY conversion (pip install scipy)
 from transforms3d.euler import euler2mat 
 import rerun as rr
+from PIL import Image
 
 
 def calibrateHandEye(target_poses,robot_poses):
@@ -195,7 +196,7 @@ def save_mask(mask: np.ndarray, output_path: str):
 
     except Exception as e:
         print(f"Error saving mask to {output_path}: {e}")
-def convert_rgbd_to_pointcloud(rgb, depth, intrinsic_matrix, extrinsic=None):
+def convert_rgbd_to_pointcloud(rgb, depth, intrinsic_matrix, extrinsic):
 #provjera da li je uopste loadovao sliku, da li slika postoji
     if rgb is None or depth is None:
         print("RGB or depth image is None")
@@ -215,7 +216,7 @@ def convert_rgbd_to_pointcloud(rgb, depth, intrinsic_matrix, extrinsic=None):
         o3d_depth_image,
         convert_rgb_to_intensity=False, 
         depth_scale=1.0, 
-        depth_trunc=1000.0, 
+        depth_trunc=3.0, 
     )
 #provjerava da li su interni parametri tj. objekat intrinsic_matrix instanca klase o3d.camera.PinholeCameraIntrinsic
     if not isinstance(intrinsic_matrix, o3d.camera.PinholeCameraIntrinsic):
@@ -226,6 +227,46 @@ def convert_rgbd_to_pointcloud(rgb, depth, intrinsic_matrix, extrinsic=None):
         rgbd_image, intrinsic_matrix, extrinsic 
     )
     return point_cloud
+def save_image_to_file(image_data, file_path):
+    """
+    Saves an image represented as a NumPy array to a file.
+
+    Args:
+        image_data (np.ndarray): The image data. Expected to be a NumPy array.
+                                 - For RGB: shape (height, width, 3), dtype=np.uint8
+                                 - For RGBA: shape (height, width, 4), dtype=np.uint8
+                                 - For Grayscale: shape (height, width), dtype=np.uint8
+        file_path (str): The full path where the image will be saved,
+                         including the desired extension (e.g., 'output/my_image.png').
+
+    Returns:
+        bool: True if the image was saved successfully, False otherwise.
+    """
+    try:
+        # Create the directory if it doesn't exist
+        directory = os.path.dirname(file_path)
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory)
+            print(f":: Created directory: {directory}")
+
+        # Convert the NumPy array to a Pillow Image object
+        image = Image.fromarray(image_data)
+        
+        # Save the image
+        image.save(file_path)
+        
+        print(f":: Successfully saved image to {file_path}")
+        return True
+        
+    except ValueError as e:
+        print(f"Error: Invalid data for image conversion. The NumPy array might have an incorrect shape or data type. Details: {e}")
+        return False
+    except IOError as e:
+        print(f"Error: Could not save the file to {file_path}. Check permissions or file path. Details: {e}")
+        return False
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        return False
 
 def log_o3d_point_cloud_to_rerun(
     pcd: o3d.geometry.PointCloud,
@@ -268,3 +309,71 @@ def log_o3d_point_cloud_to_rerun(
         )
     )
     print(f"Logged point cloud with {len(points)} points to Rerun entity '{entity_path}'.")
+    
+def cad_to_pointcloud_and_visualize(
+        cad_file_path: str,
+        entity_path: str = "world/cad_point_cloud",
+        point_radius: float = 0.002,
+        sample_points: int = 20000
+    ):
+        """
+        Loads a CAD model (STL/OBJ/PLY), samples points from its surface, and visualizes it in Rerun.
+
+        Args:
+            cad_file_path (str): Path to the CAD file (STL, OBJ, PLY, etc.).
+            entity_path (str): Rerun entity path for visualization.
+            point_radius (float): Radius for visualized points.
+            sample_points (int): Number of points to sample from the mesh surface.
+        """
+        if not os.path.exists(cad_file_path):
+            print(f"Error: CAD file '{cad_file_path}' does not exist.")
+            return
+
+        mesh = o3d.io.read_triangle_mesh(cad_file_path)
+        if mesh.is_empty():
+            print(f"Error: Failed to load mesh from '{cad_file_path}'.")
+            return
+        # Optionally, you can use Poisson disk sampling for more uniform surface points:
+        # pcd = mesh.sample_points_poisson_disk(number_of_points=sample_points, init_factor=5)
+        mesh.compute_vertex_normals()
+        pcd = mesh.sample_points_uniformly(number_of_points=sample_points)
+        o3d.visualization.draw_geometries([pcd], window_name="CAD Point Cloud Visualization")
+        # Save the sampled point cloud to the specified file path
+        pcd_save_path = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\stator.pcd"
+        try:
+            o3d.io.write_point_cloud(pcd_save_path, pcd)
+            print(f"Point cloud saved to '{pcd_save_path}'.")
+        except Exception as e:
+            print(f"Failed to save point cloud: {e}")
+        print(f"Visualized CAD model '{cad_file_path}' as point cloud in Rerun.")
+        
+def load_and_scale_cad_mesh(cad_file_path, sample_points=20000, scale_to_meters=True):
+    """
+    Loads a CAD mesh, checks its scale, and converts to meters if needed.
+    Returns a uniformly sampled point cloud in meters.
+    """
+    if not os.path.exists(cad_file_path):
+        print(f"Error: CAD file '{cad_file_path}' does not exist.")
+        return None
+
+    mesh = o3d.io.read_triangle_mesh(cad_file_path)
+    if mesh.is_empty():
+        print(f"Error: Failed to load mesh from '{cad_file_path}'.")
+        return None
+
+    vertices = np.asarray(mesh.vertices)
+    max_dim = np.abs(vertices).max()
+    print(f"[DEBUG] CAD mesh max dimension: {max_dim:.3f}")
+
+    # Heuristic: if the largest dimension is >10, assume mm and scale to meters
+    if scale_to_meters and max_dim > 10:
+        print("[INFO] Scaling CAD mesh from millimeters to meters.")
+        mesh.vertices = o3d.utility.Vector3dVector(vertices * 0.001)
+    else:
+        print("[INFO] CAD mesh assumed to be in meters.")
+
+    mesh.compute_vertex_normals()
+    pcd = mesh.sample_points_uniformly(number_of_points=sample_points)
+    o3d.io.write_point_cloud(r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\stator.pcd", pcd)
+    return pcd
+

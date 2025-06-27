@@ -6,7 +6,7 @@ from typing import List, Tuple, Optional # For type hinting
 import glob
 
 def getSegmentationMasksSAM(
-    rgb_image_path: str,
+    rgb_image_path:str,
     sam_server_url: Optional[str],
     sam_query: str,
     masks_input_dir: Optional[str],

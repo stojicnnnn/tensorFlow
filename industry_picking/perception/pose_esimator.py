@@ -111,12 +111,31 @@ def generate_waypoints(
     rerun_visualization: bool = False,
     masks_output_dir: Optional[str] = None,
     masks_input_dir: Optional[str] = None,
-    pcd_output_dir: Optional[str] = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\testSample"
+    pcd_output_dir: Optional[str] = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\testSample",
+    apply_mask: bool = False
 ) -> List[np.ndarray]:
     """
     Generates waypoints by segmenting objects, creating point clouds, and registering them.
     Uses a helper function to get masks from an online server or a local directory.
     """
+    
+    input_rgb_for_sam = cv2.imread(rgb_image_sam_path, cv2.IMREAD_UNCHANGED)
+    depth_image_raw = cv2.imread(depth_image_path, cv2.IMREAD_UNCHANGED)
+
+    
+    # --- DEBUG: Print shapes and show images side by side ---
+    if input_rgb_for_sam is not None:
+        print(f"✅ DEBUG: RGB image resolution is: {input_rgb_for_sam.shape}")
+    else:
+        print("❌ ERROR: Failed to load RGB image.")
+
+    if depth_image_raw is not None:
+        print(f"✅ DEBUG: Depth image resolution is: {depth_image_raw.shape}")
+    else:
+        print("❌ ERROR: Failed to load depth image.")
+
+
+    
     waypoints = []
     if rerun_visualization:
         try:
@@ -133,6 +152,8 @@ def generate_waypoints(
     if rerun_visualization:
         rr.log("world/input_images/rgb_for_sam", rr.Image(cv2.cvtColor(input_rgb_for_sam, cv2.COLOR_BGR2RGB)))
 
+
+
     # 2. Get segmentation masks using the robust helper function
     all_masks = getSegmentationMasksSAM(
         rgb_image_path=rgb_image_sam_path,
@@ -148,11 +169,33 @@ def generate_waypoints(
 
     # 3. Load depth image
     depth_image_raw = cv2.imread(depth_image_path, cv2.IMREAD_UNCHANGED)
+    
+    
     if depth_image_raw is None:
         print(f"Failed to load depth image from: {depth_image_path}.")
         return waypoints
-    if len(depth_image_raw.shape) == 3 and depth_image_raw.shape[2] >= 1:
-        processed_depth_image_original_resolution = depth_image_raw[:, :, 0]
+
+    # Handle different depth image formats, including Zivid 4-channel depth images
+    if len(depth_image_raw.shape) == 3:
+        if depth_image_raw.shape[2] == 1:
+            # Single channel depth (e.g., PNG 16-bit, loaded as (H, W, 1))
+            processed_depth_image_original_resolution = depth_image_raw[:, :, 0]
+        elif depth_image_raw.shape[2] == 3:
+            # RealSense case: (H, W, 3) where depth is in the first channel
+            # Sometimes RealSense saves depth as RGB where all channels are equal, or only the first channel is valid
+            # We'll check if all channels are equal, otherwise use the first channel
+            if np.all(depth_image_raw[:, :, 0] == depth_image_raw[:, :, 1]) and np.all(depth_image_raw[:, :, 0] == depth_image_raw[:, :, 2]):
+                processed_depth_image_original_resolution = depth_image_raw[:, :, 0]
+            else:
+                print("Warning: Depth image has 3 channels but channels differ. Using the first channel as depth.")
+                processed_depth_image_original_resolution = depth_image_raw[:, :, 0]
+        elif depth_image_raw.shape[2] == 4:
+            # Zivid case: (H, W, 4) where the first channel is depth, others may be confidence, noise, etc.
+            print("Detected 4-channel (Zivid) depth image. Using the first channel as depth.")
+            processed_depth_image_original_resolution = depth_image_raw[:, :, 0]
+        else:
+            print(f"Error: Depth image has an unsupported number of channels: {depth_image_raw.shape[2]}.")
+            return waypoints
     elif len(depth_image_raw.shape) == 2:
         processed_depth_image_original_resolution = depth_image_raw
     else:
@@ -199,12 +242,13 @@ def generate_waypoints(
         if rerun_visualization:
             rr.log(f"world/instance_{instance_index}/sam_binary_mask", rr.SegmentationImage(binary_mask_from_sam_resized.astype(np.uint8)))
 
-        # Apply mask to RGB and Depth images
+        # Do not apply mask to RGB or Depth images; use the full depth image for point cloud generation
         rgb_for_pcd_coloring = input_rgb_for_sam.copy()
-        rgb_for_pcd_coloring[~binary_mask_from_sam_resized] = [0, 0, 0]
-        
-        depth_image_masked_instance = processed_depth_image_original_resolution.copy()
-        depth_image_masked_instance[~binary_mask_from_sam_resized] = 0
+        if apply_mask:
+            depth_image_masked_instance = processed_depth_image_original_resolution.copy()
+            depth_image_masked_instance[~binary_mask_from_sam_resized] = 0
+        else:
+            depth_image_masked_instance = processed_depth_image_original_resolution.copy()
         
         if np.count_nonzero(depth_image_masked_instance) == 0:
             print(f"Warning: Mask instance {instance_index} resulted in an empty depth map after masking. Skipping.")
@@ -216,14 +260,34 @@ def generate_waypoints(
 
         # Prepare for Open3D
         depth_for_o3d_instance = depth_image_masked_instance.astype(np.float32)
-        depth_image_scaled_to_meters_instance = depth_for_o3d_instance / depth_scale_to_meters
+        depth_image_scaled_to_meters_instance = depth_for_o3d_instance / 1000
+
+
+        print("[DEBUG] Depth SCALED image dtype:", depth_image_scaled_to_meters_instance.dtype)
+        print("[DEBUG] Depth SCALED image min/max:", np.min(depth_image_scaled_to_meters_instance), np.max(depth_image_scaled_to_meters_instance))
         
-        image_height, image_width = depth_image_scaled_to_meters_instance.shape[:2]
+        # --- DEBUG: Check X/Y spread of the depth mask (nonzero region) ---
+        nonzero_indices = np.argwhere(depth_image_scaled_to_meters_instance > 0)
+        if nonzero_indices.size > 0:
+            y_min, x_min = np.min(nonzero_indices, axis=0)
+            y_max, x_max = np.max(nonzero_indices, axis=0)
+            print(f"[DEBUG] Depth mask nonzero X range: {x_min} to {x_max}, Y range: {y_min} to {y_max}")
+        else:
+            print("[DEBUG] No nonzero depth values after masking.")
+        
+        if rerun_visualization:
+            rr.log(
+                f"world/instance_{instance_index}/depth_scaled_to_meters",
+                rr.DepthImage(depth_image_scaled_to_meters_instance.astype(np.float32), meter=1.0)
+            )
+        
+        image_height, image_width = depth_image_masked_instance.shape[:2]
         o3d_camera_intrinsics = o3d.camera.PinholeCameraIntrinsic(
             image_width, image_height,
             camera_intrinsics_k[0, 0], camera_intrinsics_k[1, 1],
             camera_intrinsics_k[0, 2], camera_intrinsics_k[1, 2]
         )
+        
         
         # Generate Point Cloud for this instance
         pcd_instance_camera_frame = help.convert_rgbd_to_pointcloud(
@@ -232,6 +296,12 @@ def generate_waypoints(
             o3d_camera_intrinsics,
             np.identity(4)
         )
+        
+
+        # --- Rerun visualization of the generated point cloud from depth image ---
+        if rerun_visualization:
+            colors_for_rr = (np.asarray(pcd_instance_camera_frame.colors) * 255).astype(np.uint8) if pcd_instance_camera_frame.has_colors() else None
+            rr.log(f"world/instance_{instance_index}/generated_pcd_from_depth", rr.Points3D(positions=np.asarray(pcd_instance_camera_frame.points), colors=colors_for_rr))
 
         if pcd_instance_camera_frame is None or not pcd_instance_camera_frame.has_points():
             print(f"Failed to generate point cloud for instance {instance_index}. Skipping.")
@@ -309,21 +379,9 @@ def generate_waypoints(
 def fuse_multiple_scans(
     scan_directory: str,
     voxel_size: float,
-    rerun_entity_path: str = "world/fused_object"
+    rerun_entity_path: str = "world/fused_object",
+    point_radius: Optional[float] = None  # <-- NEW PARAMETER
 ) -> Optional[o3d.geometry.PointCloud]:
-    """
-    Loads multiple scans of a single object, registers them sequentially,
-    and fuses them into a single high-density point cloud.
-
-    Args:
-        scan_directory (str): Directory containing the point cloud scans (.ply or .pcd).
-        voxel_size (float): The voxel size used for registration and final cleanup.
-                            This is a critical parameter.
-        rerun_entity_path (str): The base entity path for Rerun visualization.
-
-    Returns:
-        The final fused and cleaned Open3D PointCloud object, or None if failed.
-    """
     """
     Loads multiple scans, registers them, and fuses them into a single point cloud.
 
@@ -335,7 +393,8 @@ def fuse_multiple_scans(
                                          Defaults to 40% of the voxel size.
     """
     # --- Set a default for the new parameter ---
-    point_radius = voxel_size * 0.2
+    if point_radius is None:
+        point_radius = voxel_size * 0.4
 
     scan_files = sorted([f for f in os.listdir(scan_directory) if f.endswith(('.ply', '.pcd'))])
     if len(scan_files) < 2:
