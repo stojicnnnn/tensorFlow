@@ -10,28 +10,35 @@
             "request": "launch",
             "module": "industry_picking.cameras.camera"
         },
-
         {
             "name": "Xarm test",
             "type": "debugpy",
             "request": "launch",
             "module": "industry_picking.robots.robots"
-        }
-        ,
+        },
         {
             "name": "Perception test",
             "type": "debugpy",
             "request": "launch",
             "module": "industry_picking.perception.perception"
-        }
-        ,
+        },
         {
             "name": "Main test",
             "type": "debugpy",
             "request": "launch",
             "module": "industry_picking.point_cloud_handler"
-        }
-        ,
-
+        },
+        {
+            "name": "Calibration test",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "industry_picking.scripts.calibration_record"
+        },
+        {
+            "name": "Segmentation test",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "industry_picking.scripts.perception.perception"
+        },
     ]
 }

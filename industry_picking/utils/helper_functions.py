@@ -339,7 +339,7 @@ def cad_to_pointcloud_and_visualize(
         pcd = mesh.sample_points_uniformly(number_of_points=sample_points)
         o3d.visualization.draw_geometries([pcd], window_name="CAD Point Cloud Visualization")
         # Save the sampled point cloud to the specified file path
-        pcd_save_path = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\stator.pcd"
+        pcd_save_path = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\AlignedStator.pcd"
         try:
             o3d.io.write_point_cloud(pcd_save_path, pcd)
             print(f"Point cloud saved to '{pcd_save_path}'.")
@@ -374,6 +374,6 @@ def load_and_scale_cad_mesh(cad_file_path, sample_points=20000, scale_to_meters=
 
     mesh.compute_vertex_normals()
     pcd = mesh.sample_points_uniformly(number_of_points=sample_points)
-    o3d.io.write_point_cloud(r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\stator.pcd", pcd)
+    o3d.io.write_point_cloud(r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\ScaledStator.pcd", pcd)
     return pcd
 

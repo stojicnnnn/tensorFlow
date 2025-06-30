@@ -43,8 +43,8 @@ def getSegmentationMasksSAM(
             response = requests.post(
                 sam_server_url,
                 files={"image": cv2.imencode(".jpg", input_rgb_for_sam)[1].tobytes()},
-                data={"query": sam_query},
-                timeout=15 # A shorter timeout to fail faster if the server is offline
+                data={"prompt": sam_query},
+                timeout=30 # A shorter timeout to fail faster if the server is offline
             )
             response.raise_for_status() # Check for HTTP errors like 404 or 500
 
