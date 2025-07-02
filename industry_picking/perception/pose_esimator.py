@@ -7,8 +7,15 @@ import copy
 from typing import List, Tuple, Optional # For type hinting
 from industry_picking.perception.segmentation import getSegmentationMasksSAM
 import industry_picking.utils.helper_functions as help
+import matplotlib.pyplot as plt # For visualization (pip install matplotlib)
 
-# Preprocess a point cloud: downsample, estimate normals, and compute FPFH features
+def visualize_fpfh(pcd, fpfh, voxel_size):
+    # Color points by FPFH uniqueness (red = distinctive)
+    fpfh_mean = np.mean(fpfh.data, axis=0)
+    colors = plt.cm.viridis(fpfh_mean)[:, :3]
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+    o3d.visualization.draw_geometries([pcd])
+
 def preprocess_point_cloud(pcd, voxel_size):
     """Downsample, estimate normals, and compute FPFH features."""
     print(f"Processing cloud with {len(pcd.points)} points.")
@@ -27,13 +34,11 @@ def preprocess_point_cloud(pcd, voxel_size):
         pcd_down,
         o3d.geometry.KDTreeSearchParamHybrid(radius=radius_feature, max_nn=100))
     return pcd_down, pcd_fpfh
-
-# Perform global registration using RANSAC on FPFH features
 def execute_global_registration(source_down, target_down, source_fpfh,
                                 
                                target_fpfh, voxel_size):
     """Global registration using RANSAC on FPFH features."""
-    distance_threshold = voxel_size * 1.5
+    distance_threshold = voxel_size * 1.5 
     print(":: RANSAC registration on FPFH features with distance threshold %.3f" % distance_threshold)
     result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
         source_down, target_down, source_fpfh, target_fpfh, True,
@@ -42,10 +47,8 @@ def execute_global_registration(source_down, target_down, source_fpfh,
         3, 
         [o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
          o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(distance_threshold)],
-        o3d.pipelines.registration.RANSACConvergenceCriteria(100000, 0.999))
+        o3d.pipelines.registration.RANSACConvergenceCriteria(500000, 0.999))
     return result
-
-# Refine registration using ICP (Iterative Closest Point)
 def refine_registration_icp(source, target, initial_transformation, voxel_size, use_point_to_plane=True):
     """Refine registration using ICP."""
     distance_threshold_icp = voxel_size * 0.4
@@ -69,8 +72,6 @@ def refine_registration_icp(source, target, initial_transformation, voxel_size, 
         o3d.pipelines.registration.ICPConvergenceCriteria(relative_fitness=1e-6, relative_rmse=1e-6, max_iteration=200) # Stricter criteria
     )
     return result
-
-# Remove duplicate waypoints based on minimum distance
 def filter_duplicate_waypoints(waypoints: List[np.ndarray], min_distance: float) -> List[np.ndarray]:
     """
     Filters a list of waypoints to remove duplicates based on proximity.
@@ -104,7 +105,6 @@ def filter_duplicate_waypoints(waypoints: List[np.ndarray], min_distance: float)
             
     return filtered_waypoints
 
-# Main function to generate waypoints by segmenting objects, creating point clouds, and registering them
 def generate_waypoints(
     rgb_image_sam_path: str,
     depth_image_path: str,
@@ -217,8 +217,9 @@ def generate_waypoints(
     if not target_pcd_reference.has_points():
         print("Error: Target reference point cloud is empty or failed to load.")
         return waypoints
+    
         
-    target_down, target_fpfh = preprocess_point_cloud(target_pcd_reference, voxel_size_registration)
+    target_down, target_fpfh = preprocess_point_cloud(target_pcd_reference, 0.001)
     if not target_down.has_points():
         print("Error: Downsampling target reference cloud resulted in an empty cloud. Adjust voxel_size.")
         return waypoints
@@ -270,6 +271,18 @@ def generate_waypoints(
         depth_image_scaled_to_meters_instance = depth_for_o3d_instance / 1000
 
 
+        print("[DEBUG] Depth SCALED image dtype:", depth_image_scaled_to_meters_instance.dtype)
+        print("[DEBUG] Depth SCALED image min/max:", np.min(depth_image_scaled_to_meters_instance), np.max(depth_image_scaled_to_meters_instance))
+        
+        # --- DEBUG: Check X/Y spread of the depth mask (nonzero region) ---
+        nonzero_indices = np.argwhere(depth_image_scaled_to_meters_instance > 0)
+        if nonzero_indices.size > 0:
+            y_min, x_min = np.min(nonzero_indices, axis=0)
+            y_max, x_max = np.max(nonzero_indices, axis=0)
+            print(f"[DEBUG] Depth mask nonzero X range: {x_min} to {x_max}, Y range: {y_min} to {y_max}")
+        else:
+            print("[DEBUG] No nonzero depth values after masking.")
+        
         if rerun_visualization:
             rr.log(
                 f"world/instance_{instance_index}/depth_scaled_to_meters",
@@ -291,8 +304,7 @@ def generate_waypoints(
             o3d_camera_intrinsics,
             np.identity(4)
         )
-        pcd_path = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\realsenseSample.pcd"
-        o3d.io.write_point_cloud(pcd_path, pcd_instance_camera_frame)
+        
 
         # --- Rerun visualization of the generated point cloud from depth image ---
         if rerun_visualization:
@@ -303,7 +315,15 @@ def generate_waypoints(
             print(f"Failed to generate point cloud for instance {instance_index}. Skipping.")
             continue
         
-              
+        
+        # *** ADDED: Save the generated point cloud if an output directory is provided ***
+        if pcd_output_dir:
+            pcd_filename = f"instance_{instance_index}_point_cloud.ply"
+            full_pcd_path = os.path.join(pcd_output_dir, pcd_filename)
+            o3d.io.write_point_cloud(full_pcd_path, pcd_instance_camera_frame)
+            print(f"Saved generated point cloud to: {full_pcd_path}")
+        
+        
         if rerun_visualization:
             colors_for_rr = (np.asarray(pcd_instance_camera_frame.colors) * 255).astype(np.uint8) if pcd_instance_camera_frame.has_colors() else None
             rr.log(f"world/instance_{instance_index}/segmented_pcd_camera_frame", rr.Points3D(positions=np.asarray(pcd_instance_camera_frame.points), colors=colors_for_rr))
@@ -313,11 +333,12 @@ def generate_waypoints(
         if not source_down.has_points():
             print(f"Downsampling segmented cloud for instance {instance_index} resulted in empty cloud. Skipping.")
             continue
-
+        print(f"Source downsampled cloud has {len(source_down.points)} points.")
+        
         coarse_reg_result = execute_global_registration(
             source_down, target_down, source_fpfh, target_fpfh, voxel_size_registration
         )
-        
+        # Normals are computed in preprocess_point_cloud() via pcd_down.estimate_normals()
         icp_reg_result = refine_registration_icp( # Using your ICP function
             source_down, target_down, coarse_reg_result.transformation, voxel_size_registration, use_point_to_plane=True
         )
@@ -325,7 +346,7 @@ def generate_waypoints(
         if icp_reg_result.fitness < 0.3:
             print(f"Warning: Low fitness ({icp_reg_result.fitness:.4f}) after ICP for instance {instance_index}. Waypoint may be inaccurate.")
             # We can choose to continue or skip bad registrations
-            # continue 
+            # continue
 
         T_target_source = icp_reg_result.transformation
 
@@ -347,42 +368,19 @@ def generate_waypoints(
 
         print(f"Instance {instance_index}: Waypoint in World Frame: XYZ=[{xyz_world[0]:.3f}, {xyz_world[1]:.3f}, {xyz_world[2]:.3f}], RPY(xyz)=[{rpy_world[0]:.3f}, {rpy_world[1]:.3f}, {rpy_world[2]:.3f}] rad")
         
-        # if rerun_visualization:
-        #     rr.log(f"world/instance_{instance_index}/waypoint_pose_world", rr.Transform3D(translation=xyz_world, mat3x3=rotation_matrix_world, axis_length=0.03))
+        if rerun_visualization:
+            #rr.log(f"world/instance_{instance_index}/waypoint_pose_world", rr.Transform3D(translation=xyz_world, mat3x3=rotation_matrix_world, axis_length=0.03))
             
-        #     source_down_aligned_to_target = copy.deepcopy(source_down)
-        #     source_down_aligned_to_target.transform(T_target_source)
-        #     rr.log(f"world/instance_{instance_index}/registration_visualization/source_aligned_to_target", 
-        #            rr.Points3D(positions=np.asarray(source_down_aligned_to_target.points), 
-        #                        colors=[255, 0, 0],
-        #                        radii=0.0005))
+            source_down_aligned_to_target = copy.deepcopy(source_down)
+            source_down_aligned_to_target.transform(T_target_source)
+            rr.log(f"world/instance_{instance_index}/registration_visualization/source_aligned_to_target", 
+                   rr.Points3D(positions=np.asarray(source_down_aligned_to_target.points), 
+                               colors=[255, 0, 0],
+                               radii=0.0005))
 
-    # Visualize the registered instance in the world frame
-    pcd_instance_world_frame = copy.deepcopy(pcd_instance_camera_frame)
-    pcd_instance_world_frame.transform(T_world_object)
-    if rerun_visualization:
-        rr.log(f"world/instance_{instance_index}/registered_instance_in_world", rr.Points3D(
-        positions=np.asarray(pcd_instance_world_frame.points),
-        colors=[255, 0, 0]
-    ))
-
-    # Transform the reference model to the estimated pose in the world frame
-    ref_model_at_pose = copy.deepcopy(target_pcd_reference)
-    ref_model_at_pose.transform(T_world_object)
-    if rerun_visualization:
-        rr.log(
-            f"world/instance_{instance_index}/reference_model_at_pose",
-            rr.Points3D(    
-                positions=np.asarray(ref_model_at_pose.points),
-                colors=[0, 255, 0]  # Green for reference model
-            )
-        )
-
-   
     if not waypoints:
         print("\nNo waypoints were generated.")
     else:
         print(f"\nSuccessfully generated {len(waypoints)} waypoint(s).")
         
     return waypoints
-
