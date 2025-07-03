@@ -14,10 +14,37 @@ import open3d as o3d
 from zivid import PointCloud
 from typing import List, Optional, Tuple
 import pyvista as pv
+from industry_picking.cameras.camera import RealSense
+from industry_picking.utils import helper_functions as help
+from industry_picking.robots.xarm import Xarm
+from scipy.spatial.transform import Rotation as R
 
 
-
+# if __name__ == "__main__": 
+#     arm = Xarm("192.168.1.184")
+#     arm.connect()
+#     cam = Camera(1224,1024)
+#     robot_poses_to_visit = help.loadPosesFile("poses")
+#     robot_poses = []
+#     target_poses = []
+#     #arm.connect()
+#     #for i, curr_pose in enumerate(robot_poses_to_visit):
+#     for i, curr_pose in enumerate(robot_poses_to_visit):
+#         cam.connect()
+#         camera_matrix,dist_coeffs = cam.getIntrinsics()
+#         print(f"\n--- Processing Pose {i+1}/{len(robot_poses_to_visit)} ---")
+#         arm.move(pose=curr_pose)
+#         pose_rob = arm.getPose()
+#         robot_poses.append(pose_rob)
+#         frames = cam.captureImage()
+#         pose_cam = cam.capturePose(image=frames)
+#         target_poses.append(pose_cam)
+        
+#     print(f"Transformation matrix after 10th iteration.")
+#     help.calibrateHandEye(target_poses=target_poses,robot_poses=robot_poses_to_visit)
+            
 if __name__ == "__main__":
+    
     
     cam_fx = 1244.1572265625
     cam_fy = 1243.88977050781
@@ -29,15 +56,16 @@ if __name__ == "__main__":
           [0, 0,  1]
       ])
     
-    
-    #cam = RealSense(width=1280,height=720)
-    #cam.connect()
-    #example_camera_K, _= cam.getIntrinsics()
-    #img , depth = cam.captureImage()
-    #help.save_image_to_file(image_data=img , file_path=r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\imgNova.png")
-    #help.save_image_to_file(image_data=depth , file_path=r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\depthNova.png")
-    path_to_raw_rgb_for_sam =  r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\uglovi\rgb.png" # Original RGB for SAM
-    path_to_raw_depth = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\uglovi\depth_32bit.tiff" # Original Depth
+    arm = Xarm("192.168.1.184")
+    arm.connect()
+    cam = RealSense(width=1280,height=720)
+    cam.connect()
+    example_camera_K, _= cam.getIntrinsics()
+    img , depth = cam.captureImage()
+    help.save_image_to_file(image_data=img , file_path=r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\imgNova.png")
+    help.save_image_to_file(image_data=depth , file_path=r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\depthNova.png")
+    path_to_raw_rgb_for_sam =  r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\imgNova.png" # Original RGB for SAM
+    path_to_raw_depth = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\depthNova.png" # Original Depth
     # --- DEBUG: Print depth image dtype and min/max ---
     depth_image_raw = cv2.imread(path_to_raw_depth, cv2.IMREAD_UNCHANGED)
     if depth_image_raw is not None:
@@ -47,7 +75,11 @@ if __name__ == "__main__":
         print("[DEBUG] Failed to load depth image for debug print.")
     path_to_reference_model = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\2xmanjiCC.ply" # Our best sample of an object we are picking
 
-    example_camera_T_world_cam = np.identity(4) #iz handeye kalibracije
+    example_camera_T_world_cam =  [[-0.06480675 , 0.99710445, -0.03978454 , 0.42953945],
+                                    [ 0.99665811 , 0.06268809, -0.05237195 , -0.0752032 ],
+                                    [-0.04972628 , -0.04304564, -0.99783484 , 0.4529416 ],
+                                    [ 0.          , 0.          , 0.          , 1.        ]] #iz handeye kalibracije
+    #example_camera_T_world_cam = np.identity(4) # For debugging, use identity matrix to simulate no transformation
     divisor = 1/  0.0010000000474974513
 
 
@@ -72,12 +104,13 @@ if __name__ == "__main__":
         
 
         # Define how close two waypoints can be before being called a duplicate.
-        MINIMUM_DISTANCE_BETWEEN_OBJECTS = 0.01 # 2 centimeters
+        MINIMUM_DISTANCE_BETWEEN_OBJECTS = 0.1 # 2 centimeters
 
         final_waypoints = pest.filter_duplicate_waypoints(
             generated_robot_waypoints,
             min_distance=MINIMUM_DISTANCE_BETWEEN_OBJECTS
         )
+        
 
     if final_waypoints:
             print("\nVisualizing final waypoints and path in Rerun under 'world/final_waypoints'...")
@@ -102,7 +135,22 @@ if __name__ == "__main__":
                 # If using the workaround for older SDKs:
                 # axis_length = 0.05
                 # rr.log(f"world/final_waypoints/{idx}/axes", rr.Arrows3D(...))
-
+    # Move the robot arm to each final waypoint with a Z offset
+    
+    Z_OFFSET = -0.083  # meters (adjust as needed)
+    for idx, wp in enumerate(final_waypoints):
+        
+        x, y, z, rot_x, rot_y, rot_z = wp[0], wp[1], wp[2]+0.1, wp[3], wp[4], wp[5] 
+        # Convert Euler angles to rotation matrix (assuming 'xyz' or 'zyx' order)
+        rotation = R.from_euler('xyz', [rot_x, rot_y, rot_z]).as_matrix()
+        # Build 4x4 transformation matrix
+        transform = np.eye(4)
+        transform[:3, :3] = rotation
+        transform[:3, 3] = [x, y, z]
+        
+        target_pose = transform.copy()
+        arm.move(pose=target_pose)
+        time.sleep(1)  # Optional: wait for motion to complete
     else:
         print("No waypoints were generated by the function.")
     time.sleep(60)
