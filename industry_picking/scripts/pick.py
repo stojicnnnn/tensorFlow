@@ -1,23 +1,10 @@
 import rerun as rr
 import numpy as np
-from scipy.spatial.transform import Rotation
-import zivid.experimental
-import zivid.experimental.calibration # For RPY conversion (pip install scipy)
 import industry_picking.perception.pose_esimator as pest
-import cv2
 import time
-import zivid
-import os
-from pathlib import Path 
-import matplotlib.pyplot as plt
-import open3d as o3d
-from zivid import PointCloud
-from typing import List, Optional, Tuple
-import pyvista as pv
 from industry_picking.cameras.camera import RealSense
 from industry_picking.utils import helper_functions as help
 from industry_picking.robots.xarm import Xarm
-from scipy.spatial.transform import Rotation as R
 
             
 if __name__ == "__main__":

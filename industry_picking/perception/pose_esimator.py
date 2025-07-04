@@ -65,7 +65,6 @@ def refine_registration_icp(source, target, initial_transformation, voxel_size, 
         o3d.pipelines.registration.ICPConvergenceCriteria(relative_fitness=1e-6, relative_rmse=1e-6, max_iteration=200) # Stricter criteria
     )
     return result
-
 def filter_duplicate_waypoints(
     waypoints: List[np.ndarray], 
     min_distance: float,

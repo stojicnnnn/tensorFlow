@@ -1,6 +1,5 @@
 import numpy as np
 import cv2
-from industry_picking.cameras.camera import RealSense
 
 depth_image = cv2.imread(r'C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\depth_image_16bit.png', cv2.IMREAD_UNCHANGED)
 
