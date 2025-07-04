@@ -119,6 +119,114 @@ def filter_duplicate_waypoints(
 
     return filtered_waypoints
 
+def load_and_validate_images(rgb_path: str, depth_path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Load and validate RGB and depth images."""
+    rgb_image = cv2.imread(rgb_path, cv2.IMREAD_UNCHANGED)
+    depth_image = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+    
+    if rgb_image is None:
+        raise FileNotFoundError(f"Failed to load RGB image: {rgb_path}")
+    if depth_image is None:
+        raise FileNotFoundError(f"Failed to load depth image: {depth_path}")
+        
+    print(f"✅ RGB image resolution: {rgb_image.shape}")
+    print(f"✅ Depth image resolution: {depth_image.shape}")
+    
+    return rgb_image, depth_image
+
+def process_depth_image(depth_image: np.ndarray) -> np.ndarray:
+    """Process depth image to handle different formats."""
+    if len(depth_image.shape) == 3:
+        if depth_image.shape[2] == 1:
+            return depth_image[:, :, 0]
+        elif depth_image.shape[2] == 3:
+            if np.all(depth_image[:, :, 0] == depth_image[:, :, 1]) and np.all(depth_image[:, :, 0] == depth_image[:, :, 2]):
+                return depth_image[:, :, 0]
+            print("Warning: Using first channel of 3-channel depth image")
+            return depth_image[:, :, 0]
+        elif depth_image.shape[2] == 4:
+            print("Detected 4-channel (Zivid) depth image")
+            return depth_image[:, :, 0]
+        else:
+            raise ValueError(f"Unsupported depth image channels: {depth_image.shape[2]}")
+    elif len(depth_image.shape) == 2:
+        return depth_image
+    else:
+        raise ValueError(f"Unsupported depth image shape: {depth_image.shape}")
+
+def load_reference_model(reference_path: str, voxel_size: float = 0.001) -> Tuple[o3d.geometry.PointCloud, np.ndarray]:
+    """Load and preprocess reference point cloud model."""
+    if not os.path.exists(reference_path):
+        raise FileNotFoundError(f"Reference object not found at {reference_path}")
+    
+    target_pcd = o3d.io.read_point_cloud(reference_path)
+    if not target_pcd.has_points():
+        raise ValueError("Reference point cloud is empty")
+    
+    target_down, target_fpfh = preprocess_point_cloud(target_pcd, voxel_size)
+    if not target_down.has_points():
+        raise ValueError("Downsampled reference cloud is empty")
+    
+    return target_down, target_fpfh
+
+def process_mask_instance(
+    mask: np.ndarray, 
+    depth_image: np.ndarray,
+    rgb_image: np.ndarray,
+    apply_mask: bool = False
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Process a single mask instance and prepare depth/RGB data."""
+    # Resize mask if needed
+    if mask.shape != depth_image.shape[:2]:
+        mask = cv2.resize(
+            mask.astype(np.uint8) * 255,
+            (depth_image.shape[1], depth_image.shape[0]),
+            interpolation=cv2.INTER_NEAREST
+        ).astype(bool)
+    
+    # Apply mask if requested
+    if apply_mask:
+        masked_depth = depth_image.copy()
+        masked_depth[~mask] = 0
+    else:
+        masked_depth = depth_image.copy()
+    
+    if np.count_nonzero(masked_depth) == 0:
+        raise ValueError("Mask resulted in empty depth map")
+    
+    return masked_depth, rgb_image.copy()
+
+def register_and_calculate_pose(
+    source_pcd: o3d.geometry.PointCloud,
+    target_pcd: o3d.geometry.PointCloud,
+    target_fpfh: np.ndarray,
+    voxel_size: float,
+    camera_extrinsics: np.ndarray
+) -> np.ndarray:
+    """Perform registration and calculate world pose."""
+    source_down, source_fpfh = preprocess_point_cloud(source_pcd, voxel_size)
+    if not source_down.has_points():
+        raise ValueError("Source point cloud is empty after downsampling")
+    
+    # Coarse registration
+    coarse_result = execute_global_registration(
+        source_down, target_pcd, source_fpfh, target_fpfh, voxel_size
+    )
+    
+    # Fine registration
+    icp_result = refine_registration_icp(
+        source_down, target_pcd, coarse_result.transformation, 
+        voxel_size, use_point_to_plane=True
+    )
+    
+    if icp_result.fitness < 0.3:
+        print(f"Warning: Low registration fitness: {icp_result.fitness:.2f}")
+    
+    T_camera_object = np.linalg.inv(icp_result.transformation)
+    T_world_object = camera_extrinsics @ T_camera_object
+    
+    return T_world_object
+
 def generate_waypoints(
     rgb_image_sam_path: str,
     depth_image_path: str,
@@ -132,356 +240,111 @@ def generate_waypoints(
     rerun_visualization: bool = False,
     masks_output_dir: Optional[str] = None,
     masks_input_dir: Optional[str] = None,
-    pcd_output_dir: Optional[str] = r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\testSample",
+    pcd_output_dir: Optional[str] = None,
     apply_mask: bool = False
 ) -> List[np.ndarray]:
-    """
-    Generates waypoints by segmenting objects, creating point clouds, and registering them.
-    Uses a helper function to get masks from an online server or a local directory.
-    """
-    
-    input_rgb_for_sam = cv2.imread(rgb_image_sam_path, cv2.IMREAD_UNCHANGED)
-    depth_image_raw = cv2.imread(depth_image_path, cv2.IMREAD_UNCHANGED)
-
-    
-    # --- DEBUG: Print shapes and show images side by side ---
-    if input_rgb_for_sam is not None:
-        print(f"✅ DEBUG: RGB image resolution is: {input_rgb_for_sam.shape}")
-    else:
-        print("❌ ERROR: Failed to load RGB image.")
-
-    if depth_image_raw is not None:
-        print(f"✅ DEBUG: Depth image resolution is: {depth_image_raw.shape}")
-    else:
-        print("❌ ERROR: Failed to load depth image.")
-
-
-    
-    waypoints = []
+    """Main function to generate waypoints from segmented objects."""
+    # Initialize visualization
     if rerun_visualization:
         try:
             rr.init("generate_waypoints_demo", spawn=True)
         except Exception as e:
-            print(f"Rerun initialization failed: {e}. Continuing without Rerun visualization.")
+            print(f"Rerun initialization failed: {e}")
             rerun_visualization = False
 
-    # 1. Load the main RGB image
-    input_rgb_for_sam = cv2.imread(rgb_image_sam_path)
-    if input_rgb_for_sam is None:
-        print(f"Error: Could not read input RGB image: {rgb_image_sam_path}")
-        return waypoints
-    if rerun_visualization:
-        rr.log("world/input_images/rgb_for_sam", rr.Image(cv2.cvtColor(input_rgb_for_sam, cv2.COLOR_BGR2RGB)))
+    # Load and validate input data
+    rgb_image, depth_image = load_and_validate_images(rgb_image_sam_path, depth_image_path)
+    processed_depth = process_depth_image(depth_image)
+    target_down, target_fpfh = load_reference_model(reference_object_path, voxel_size_registration)
 
-
-
-    # 2. Get segmentation masks using the robust helper function
+    # Get segmentation masks
     all_masks = getSegmentationMasksSAM(
         rgb_image_path=rgb_image_sam_path,
         sam_server_url=sam_server_url,
         sam_query=sam_query,
         masks_input_dir=masks_input_dir,
-        input_rgb_shape=input_rgb_for_sam.shape[:2]
+        input_rgb_shape=rgb_image.shape[:2]
+    )
+    if not all_masks:
+        print("No segmentation masks found")
+        return []
+
+    # Process each mask instance
+    waypoints = []
+    o3d_intrinsics = o3d.camera.PinholeCameraIntrinsic(
+        width=depth_image.shape[1],
+        height=depth_image.shape[0],
+        fx=camera_intrinsics_k[0, 0],
+        fy=camera_intrinsics_k[1, 1],
+        cx=camera_intrinsics_k[0, 2],
+        cy=camera_intrinsics_k[1, 2]
     )
 
-    if not all_masks:
-        print("Could not obtain any segmentation masks. Exiting.")
-        return waypoints
-
-    # 3. Load depth image
-    depth_image_raw = cv2.imread(depth_image_path, cv2.IMREAD_UNCHANGED)
-    
-    
-    if depth_image_raw is None:
-        print(f"Failed to load depth image from: {depth_image_path}.")
-        return waypoints
-
-    # Handle different depth image formats, including Zivid 4-channel depth images
-    if len(depth_image_raw.shape) == 3:
-        if depth_image_raw.shape[2] == 1:
-            # Single channel depth (e.g., PNG 16-bit, loaded as (H, W, 1))
-            processed_depth_image_original_resolution = depth_image_raw[:, :, 0]
-        elif depth_image_raw.shape[2] == 3:
-            # RealSense case: (H, W, 3) where depth is in the first channel
-            # Sometimes RealSense saves depth as RGB where all channels are equal, or only the first channel is valid
-            # We'll check if all channels are equal, otherwise use the first channel
-            if np.all(depth_image_raw[:, :, 0] == depth_image_raw[:, :, 1]) and np.all(depth_image_raw[:, :, 0] == depth_image_raw[:, :, 2]):
-                processed_depth_image_original_resolution = depth_image_raw[:, :, 0]
-            else:
-                print("Warning: Depth image has 3 channels but channels differ. Using the first channel as depth.")
-                processed_depth_image_original_resolution = depth_image_raw[:, :, 0]
-        elif depth_image_raw.shape[2] == 4:
-            # Zivid case: (H, W, 4) where the first channel is depth, others may be confidence, noise, etc.
-            print("Detected 4-channel (Zivid) depth image. Using the first channel as depth.")
-            processed_depth_image_original_resolution = depth_image_raw[:, :, 0]
-        else:
-            print(f"Error: Depth image has an unsupported number of channels: {depth_image_raw.shape[2]}.")
-            return waypoints
-    elif len(depth_image_raw.shape) == 2:
-        processed_depth_image_original_resolution = depth_image_raw
-    else:
-        print(f"Error: Depth image has an unsupported shape: {depth_image_raw.shape}.")
-        return waypoints
-
-    # 4. Load and preprocess the reference model
-    if not os.path.exists(reference_object_path):
-        print(f"Error: Reference object file not found at '{reference_object_path}'.")
-        return waypoints
-    target_pcd_reference = o3d.io.read_point_cloud(reference_object_path)
-    if not target_pcd_reference.has_points():
-        print("Error: Target reference point cloud is empty or failed to load.")
-        return waypoints
-        
-    target_down, target_fpfh = preprocess_point_cloud(target_pcd_reference, voxel_size_registration)
-    if not target_down.has_points():
-        print("Error: Downsampling target reference cloud resulted in an empty cloud. Adjust voxel_size.")
-        return waypoints
-    if rerun_visualization:
-        rr.log("world/reference_model/target_downsampled", rr.Points3D(positions=np.asarray(target_down.points), colors=[0, 0, 255] if not target_down.has_colors() else None))
-
-    # 5. Process each mask to generate a waypoint
-    for instance_index, binary_mask_from_sam in enumerate(all_masks):
-        print(f"\n--- Processing Mask Instance {instance_index} ---")
-
-        # Resize mask if its dimensions don't match the depth image
-        if binary_mask_from_sam.shape != processed_depth_image_original_resolution.shape[:2]:
-            print(f"Resizing SAM binary mask from {binary_mask_from_sam.shape} to depth image shape {processed_depth_image_original_resolution.shape[:2]}")
-            binary_mask_from_sam_resized = cv2.resize(
-                binary_mask_from_sam.astype(np.uint8) * 255,
-                (processed_depth_image_original_resolution.shape[1], processed_depth_image_original_resolution.shape[0]),
-                interpolation=cv2.INTER_NEAREST
-            ).astype(bool)
-        else:
-            binary_mask_from_sam_resized = binary_mask_from_sam
-
-        # Save the mask for future offline use if an output directory is specified
-        if masks_output_dir:
-            mask_filename = f"mask_instance_{instance_index}.png"
-            full_mask_path = os.path.join(masks_output_dir, mask_filename)
-            help.save_mask(binary_mask_from_sam_resized, full_mask_path)
-        
-        if rerun_visualization:
-            rr.log(f"world/instance_{instance_index}/sam_binary_mask", rr.SegmentationImage(binary_mask_from_sam_resized.astype(np.uint8)))
-
-        # Do not apply mask to RGB or Depth images; use the full depth image for point cloud generation
-        rgb_for_pcd_coloring = input_rgb_for_sam.copy()
-        if apply_mask:
-            depth_image_masked_instance = processed_depth_image_original_resolution.copy()
-            depth_image_masked_instance[~binary_mask_from_sam_resized] = 0
-        else:
-            depth_image_masked_instance = processed_depth_image_original_resolution.copy()
-        
-        if np.count_nonzero(depth_image_masked_instance) == 0:
-            print(f"Warning: Mask instance {instance_index} resulted in an empty depth map after masking. Skipping.")
-            continue
-            
-        if rerun_visualization:
-            rr.log(f"world/instance_{instance_index}/rgb_masked_for_pcd", rr.Image(cv2.cvtColor(rgb_for_pcd_coloring, cv2.COLOR_BGR2RGB)))
-            rr.log(f"world/instance_{instance_index}/depth_masked", rr.DepthImage(depth_image_masked_instance.astype(np.float32), meter=depth_scale_to_meters))
-
-        # Prepare for Open3D
-        depth_for_o3d_instance = depth_image_masked_instance.astype(np.float32)
-        depth_image_scaled_to_meters_instance = depth_for_o3d_instance / 1000
-
-
-        print("[DEBUG] Depth SCALED image dtype:", depth_image_scaled_to_meters_instance.dtype)
-        print("[DEBUG] Depth SCALED image min/max:", np.min(depth_image_scaled_to_meters_instance), np.max(depth_image_scaled_to_meters_instance))
-        
-        # --- DEBUG: Check X/Y spread of the depth mask (nonzero region) ---
-        nonzero_indices = np.argwhere(depth_image_scaled_to_meters_instance > 0)
-        if nonzero_indices.size > 0:
-            y_min, x_min = np.min(nonzero_indices, axis=0)
-            y_max, x_max = np.max(nonzero_indices, axis=0)
-            print(f"[DEBUG] Depth mask nonzero X range: {x_min} to {x_max}, Y range: {y_min} to {y_max}")
-        else:
-            print("[DEBUG] No nonzero depth values after masking.")
-        
-        if rerun_visualization:
-            rr.log(
-                f"world/instance_{instance_index}/depth_scaled_to_meters",
-                rr.DepthImage(depth_image_scaled_to_meters_instance.astype(np.float32), meter=1.0)
-            )
-        
-        image_height, image_width = depth_image_masked_instance.shape[:2]
-        o3d_camera_intrinsics = o3d.camera.PinholeCameraIntrinsic(
-            image_width, image_height,
-            camera_intrinsics_k[0, 0], camera_intrinsics_k[1, 1],
-            camera_intrinsics_k[0, 2], camera_intrinsics_k[1, 2]
-        )
-        
-        
-        # Generate Point Cloud for this instance
-        pcd_instance_camera_frame = help.convert_rgbd_to_pointcloud(
-            rgb_for_pcd_coloring,
-            depth_image_scaled_to_meters_instance,
-            o3d_camera_intrinsics,
-            np.identity(4)
-        )
-        
-
-        # --- Rerun visualization of the generated point cloud from depth image ---
-        if rerun_visualization:
-            colors_for_rr = (np.asarray(pcd_instance_camera_frame.colors) * 255).astype(np.uint8) if pcd_instance_camera_frame.has_colors() else None
-            rr.log(f"world/instance_{instance_index}/generated_pcd_from_depth", rr.Points3D(positions=np.asarray(pcd_instance_camera_frame.points), colors=colors_for_rr))
-
-        if pcd_instance_camera_frame is None or not pcd_instance_camera_frame.has_points():
-            print(f"Failed to generate point cloud for instance {instance_index}. Skipping.")
-            continue
-        
-        
-        # *** ADDED: Save the generated point cloud if an output directory is provided ***
-        if pcd_output_dir:
-            pcd_filename = f"instance_{instance_index}_point_cloud.ply"
-            full_pcd_path = os.path.join(pcd_output_dir, pcd_filename)
-            o3d.io.write_point_cloud(full_pcd_path, pcd_instance_camera_frame)
-            print(f"Saved generated point cloud to: {full_pcd_path}")
-        
-        
-        if rerun_visualization:
-            colors_for_rr = (np.asarray(pcd_instance_camera_frame.colors) * 255).astype(np.uint8) if pcd_instance_camera_frame.has_colors() else None
-            rr.log(f"world/instance_{instance_index}/segmented_pcd_camera_frame", rr.Points3D(positions=np.asarray(pcd_instance_camera_frame.points), colors=colors_for_rr))
-
-        # Perform Registration against the reference model
-        source_down, source_fpfh = preprocess_point_cloud(pcd_instance_camera_frame, voxel_size_registration)
-        if not source_down.has_points():
-            print(f"Downsampling segmented cloud for instance {instance_index} resulted in empty cloud. Skipping.")
-            continue
-
-        coarse_reg_result = execute_global_registration(
-            source_down, target_down, source_fpfh, target_fpfh, voxel_size_registration
-        )
-        
-        icp_reg_result = refine_registration_icp( # Using your ICP function
-            source_down, target_down, coarse_reg_result.transformation, voxel_size_registration, use_point_to_plane=True
-        )
-        
-        if icp_reg_result.fitness < 0.3:
-            print(f"Warning: Low fitness ({icp_reg_result.fitness:.4f}) after ICP for instance {instance_index}. Waypoint may be inaccurate.")
-            # We can choose to continue or skip bad registrations
-            # continue 
-
-        T_target_source = icp_reg_result.transformation
-
+    for i, mask in enumerate(all_masks):
         try:
-            T_camera_object = np.linalg.inv(T_target_source)
-        except np.linalg.LinAlgError:
-            print(f"Error: Could not compute inverse of registration matrix for instance {instance_index}. Skipping.")
+            print(f"\n--- Processing Instance {i} ---")
+            
+            # Process mask and prepare data
+            masked_depth, rgb_coloring = process_mask_instance(
+                mask, processed_depth, rgb_image, apply_mask
+            )
+            scaled_depth = masked_depth.astype(np.float32) / depth_scale_to_meters
+
+            # Create point cloud
+            pcd = help.convert_rgbd_to_pointcloud(
+                rgb_coloring, scaled_depth, o3d_intrinsics, np.identity(4)
+            )
+            if pcd is None or not pcd.has_points():
+                print(f"Skipping instance {i} - empty point cloud")
+                continue
+
+            # Save point cloud if requested
+            if pcd_output_dir:
+                os.makedirs(pcd_output_dir, exist_ok=True)
+                o3d.io.write_point_cloud(
+                    os.path.join(pcd_output_dir, f"instance_{i}_point_cloud.ply"), 
+                    pcd
+                )
+
+            # Register and calculate pose
+            pose = register_and_calculate_pose(
+                pcd, target_down, target_fpfh,
+                voxel_size_registration, camera_extrinsics
+            )
+            waypoints.append(pose)
+
+            # Visualization
+            if rerun_visualization:
+                visualize_instance(i, pcd, pose, target_down)
+
+        except Exception as e:
+            print(f"Error processing instance {i}: {str(e)}")
             continue
-            
-        # Transform object pose from Camera Frame to World Frame
-        T_world_object = camera_extrinsics @ T_camera_object
 
-        waypoints.append(T_world_object)  # Store the full 4x4 pose
-        xyz_world = T_world_object[:3, 3]
-        rpy_world = help.rotation_matrix_to_rpy(T_world_object[:3, :3])
-
-
-        print(f"Instance {instance_index}: Waypoint in World Frame: XYZ=[{xyz_world[0]:.3f}, {xyz_world[1]:.3f}, {xyz_world[2]:.3f}], RPY(xyz)=[{rpy_world[0]:.3f}, {rpy_world[1]:.3f}, {rpy_world[2]:.3f}] rad")
-        
-        if rerun_visualization:
-            rr.log(f"world/instance_{instance_index}/waypoint_pose_world", rr.Transform3D(translation=xyz_world, mat3x3=rotation_matrix_world, axis_length=0.03))
-            
-            source_down_aligned_to_target = copy.deepcopy(source_down)
-            source_down_aligned_to_target.transform(T_target_source)
-            rr.log(f"world/instance_{instance_index}/registration_visualization/source_aligned_to_target", 
-                   rr.Points3D(positions=np.asarray(source_down_aligned_to_target.points), 
-                               colors=[255, 0, 0],
-                               radii=0.002))
-
-    if not waypoints:
-        print("\nNo waypoints were generated.")
-    else:
-        print(f"\nSuccessfully generated {len(waypoints)} waypoint(s).")
-        
+    print(f"\nGenerated {len(waypoints)} valid waypoints")
     return waypoints
 
-def fuse_multiple_scans(
-    scan_directory: str,
-    voxel_size: float,
-    rerun_entity_path: str = "world/fused_object",
-    point_radius: Optional[float] = None  # <-- NEW PARAMETER
-) -> Optional[o3d.geometry.PointCloud]:
-    """
-    Loads multiple scans, registers them, and fuses them into a single point cloud.
-
-    Args:
-        scan_directory (str): Directory containing the point cloud scans.
-        voxel_size (float): The voxel size for registration and cleanup.
-        rerun_entity_path (str): Base entity path for Rerun visualization.
-        point_radius (Optional[float]): The visual radius of points in Rerun.
-                                         Defaults to 40% of the voxel size.
-    """
-    # --- Set a default for the new parameter ---
-    if point_radius is None:
-        point_radius = voxel_size * 0.4
-
-    scan_files = sorted([f for f in os.listdir(scan_directory) if f.endswith(('.ply', '.pcd'))])
-    if len(scan_files) < 2:
-        print("Error: Need at least two scans to perform fusion.")
-        return None
-
-    all_scans = []
-    for filename in scan_files:
-        pcd = o3d.io.read_point_cloud(os.path.join(scan_directory, filename))
-        if pcd.has_points():
-            all_scans.append(pcd)
-
-    fused_pcd = all_scans.pop(0)
-    rr.log(f"{rerun_entity_path}/steps/00_base_model", rr.Points3D(
-        positions=np.asarray(fused_pcd.points),
-        colors=np.asarray(fused_pcd.colors) if fused_pcd.has_colors() else None,
-        radii=point_radius  # <-- APPLIED HERE
-    ))
-
-    for i, source_pcd in enumerate(all_scans):
-        step_index = i + 1
-        print(f"\n--- Processing Scan {step_index+1}/{len(all_scans)+1} ---")
-        
-        target_pcd = fused_pcd
-        
-        rr.log(f"{rerun_entity_path}/steps/{step_index:02d}_source_unaligned", rr.Points3D(
-            positions=np.asarray(source_pcd.points), colors=[255, 0, 0],
-            radii=point_radius # <-- APPLIED HERE
-        ))
-        
-        source_down, source_fpfh = preprocess_point_cloud(source_pcd, voxel_size)
-        target_down, target_fpfh = preprocess_point_cloud(target_pcd, voxel_size)
-
-        coarse_reg_result = execute_global_registration(
-            source_down, target_down, source_fpfh, target_fpfh, voxel_size
-        )
-
-        fine_reg_result = refine_registration_icp(
-            source_down, target_down, coarse_reg_result.transformation, voxel_size
-        )
-        
-        transformation_matrix = fine_reg_result.transformation
-
-        source_pcd_transformed = copy.deepcopy(source_pcd)
-        source_pcd_transformed.transform(transformation_matrix)
-        
-        rr.log(f"{rerun_entity_path}/steps/{step_index:02d}_source_aligned", rr.Points3D(
-            positions=np.asarray(source_pcd_transformed.points), colors=[0, 255, 0],
-            radii=point_radius # <-- APPLIED HERE
-        ))
-
-        fused_pcd += source_pcd_transformed
-        fused_pcd = fused_pcd.voxel_down_sample(voxel_size)
-
-        rr.log(f"{rerun_entity_path}/steps/{step_index:02d}_fused_progressive", rr.Points3D(
-            positions=np.asarray(fused_pcd.points),
-            colors=np.asarray(fused_pcd.colors) if fused_pcd.has_colors() else None,
-            radii=point_radius # <-- APPLIED HERE
-        ))
-
-    print("\n--- Fusion Complete. Performing final cleanup. ---")
-    final_pcd = fused_pcd # Already downsampled in the loop
-    print(f"Final model has {len(final_pcd.points)} points.")
-
-    rr.log(f"{rerun_entity_path}/final_model", rr.Points3D(
-        positions=np.asarray(final_pcd.points),
-        colors=np.asarray(final_pcd.colors) if final_pcd.has_colors() else None,
-        radii=point_radius # <-- APPLIED HERE
-    ))
+def visualize_instance(
+    instance_id: int,
+    pcd: o3d.geometry.PointCloud,
+    pose: np.ndarray,
+    target_pcd: o3d.geometry.PointCloud
+):
+    """Visualize registration results using Rerun."""
+    # Visualize point cloud
+    colors = (np.asarray(pcd.colors) * 255).astype(np.uint8) if pcd.has_colors() else None
+    rr.log(f"world/instance_{instance_id}/pcd", 
+           rr.Points3D(positions=np.asarray(pcd.points), colors=colors))
     
-    return final_pcd
+    # Visualize pose
+    rr.log(f"world/instance_{instance_id}/pose",
+           rr.Transform3D(
+               translation=pose[:3, 3],
+               mat3x3=pose[:3, :3]
+           ))
+    
+    # Visualize aligned model
+    aligned_target = copy.deepcopy(target_pcd)
+    aligned_target.transform(np.linalg.inv(pose))
+    rr.log(f"world/instance_{instance_id}/aligned_target",
+           rr.Points3D(positions=np.asarray(aligned_target.points)))
