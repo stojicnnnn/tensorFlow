@@ -8,7 +8,7 @@ import rerun as rr
 from PIL import Image
 
 
-def calibrateHandEye(target_poses,robot_poses):
+def calibrate_hand_eye(target_poses,robot_poses):
         target_rvecs, target_tvecs = [], []
         robot_rvecs, robot_tvecs = [], []
         for pose in robot_poses:
@@ -30,7 +30,7 @@ def calibrateHandEye(target_poses,robot_poses):
             #target_rvecs.append(R)
             #target_tvecs.append(tvec)
 
-        rvec, tvec = cv2.calibrateHandEye(
+        rvec, tvec = cv2.calibrate_hand_eye(
             robot_rvecs,
             robot_tvecs,
             target_rvecs,
@@ -267,7 +267,6 @@ def save_image_to_file(image_data, file_path):
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         return False
-
 def log_o3d_point_cloud_to_rerun(
     pcd: o3d.geometry.PointCloud,
     entity_path: str,
@@ -308,8 +307,7 @@ def log_o3d_point_cloud_to_rerun(
             radii=point_radius
         )
     )
-    print(f"Logged point cloud with {len(points)} points to Rerun entity '{entity_path}'.")
-    
+    print(f"Logged point cloud with {len(points)} points to Rerun entity '{entity_path}'.")   
 def cad_to_pointcloud_and_visualize(
         cad_file_path: str,
         entity_path: str = "world/cad_point_cloud",
@@ -345,8 +343,7 @@ def cad_to_pointcloud_and_visualize(
             print(f"Point cloud saved to '{pcd_save_path}'.")
         except Exception as e:
             print(f"Failed to save point cloud: {e}")
-        print(f"Visualized CAD model '{cad_file_path}' as point cloud in Rerun.")
-        
+        print(f"Visualized CAD model '{cad_file_path}' as point cloud in Rerun.")        
 def load_and_scale_cad_mesh(cad_file_path, sample_points=20000, scale_to_meters=True):
     """
     Loads a CAD mesh, checks its scale, and converts to meters if needed.
@@ -376,4 +373,181 @@ def load_and_scale_cad_mesh(cad_file_path, sample_points=20000, scale_to_meters=
     pcd = mesh.sample_points_uniformly(number_of_points=sample_points)
     o3d.io.write_point_cloud(r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\data\stator.pcd", pcd)
     return pcd
+def compare_point_clouds(cloud1_path, cloud2_path, voxel_size=0.001):
+        """Compare all key characteristics of two point clouds."""
+        # Load clouds
+        cloud1 = o3d.io.read_point_cloud(cloud1_path)
+        cloud2 = o3d.io.read_point_cloud(cloud2_path)
+        
+        def normalize_scale(pcd, target_scale):
+            """Rescale point cloud to match target scale"""
+            points = np.asarray(pcd.points)
+            current_scale = np.max(points) - np.min(points)
+            scale_factor = target_scale / current_scale
+            pcd.scale(scale_factor, center=pcd.get_center())
+            return pcd
+        
+        for pcd in [cloud1, cloud2]:
+            pcd.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                radius=0.05,  # Adjust based on point spacing
+                max_nn=30
+            )
+        )
+        cloud1 = normalize_scale(cloud1, target_scale=0.1)  # ~cloud2's max extent
+
+        # Orient normals consistently
+        pcd.orient_normals_to_align_with_direction()
+
+        if np.all(np.asarray(cloud1.normals)[:, 2] == 1):  # If all Z-up
+            print("Warning: cloud1 appears to be a 2D plane - add artificial noise")
+        points = np.asarray(cloud1.points)
+        points += np.random.normal(0, 0.001, points.shape)  # Add minor noise
+        cloud1.points = o3d.utility.Vector3dVector(points)
+        cloud1.estimate_normals()  # Recompute normals    
+        cloud1.scale(0.5, center=cloud1.get_center())
+      
+        
+        ###################END OF NORMALS AND NOISE HANDLING###################
+        # Rescale cloud1 to match cloud2's scale (or vice versa)
+        o3d.io.write_point_cloud("2xmanji.ply", cloud1)  # PLY format
+        # Basic validation
+        cloud1 = cloud1.remove_non_finite_points()
+        cloud2 = cloud2.remove_non_finite_points()
+        
+        # Initialize comparison dict
+        comparison = {
+            'basic_stats': {},
+            'normal_stats': {},
+            'feature_stats': {},
+            'overlap_analysis': None,
+            'visualizations': []
+        }
+        
+        # 1. Basic statistics comparison
+        def get_basic_stats(pcd, name):
+            points = np.asarray(pcd.points)
+            nn_distances = np.asarray(pcd.compute_nearest_neighbor_distance())
+            return {
+            f'{name}_point_count': len(points),
+            f'{name}_extent': np.ptp(points, axis=0),  # Peak-to-peak (max-min) per axis
+            f'{name}_mean_spacing': float(np.mean(nn_distances)),  # Explicit conversion
+            f'{name}_has_normals': pcd.has_normals(),
+            f'{name}_has_colors': pcd.has_colors(),
+            f'{name}_nan_count': len(pcd.points) - len(points)
+        }
+        
+        comparison['basic_stats'].update(get_basic_stats(cloud1, 'cloud1'))
+        comparison['basic_stats'].update(get_basic_stats(cloud2, 'cloud2'))
+        
+        # 2. Normal vector analysis
+        def analyze_normals(pcd, name):
+            if not pcd.has_normals():
+                pcd.estimate_normals(
+                    o3d.geometry.KDTreeSearchParamHybrid(
+                        radius=voxel_size*2, 
+                        max_nn=30
+                    )
+                )
+            normals = np.asarray(pcd.normals)
+            return {
+                f'{name}_normal_consistency': np.mean(np.linalg.norm(normals, axis=1)),
+                f'{name}_normal_angle_var': np.var(np.arccos(normals[:, 2]))  # Variance from Z-axis
+            }
+        
+        comparison['normal_stats'].update(analyze_normals(cloud1, 'cloud1'))
+        comparison['normal_stats'].update(analyze_normals(cloud2, 'cloud2'))
+        
+        # 3. Feature quality comparison
+        def analyze_features(pcd, name):
+            if not pcd.has_normals():
+                pcd.estimate_normals()
+            fpfh = o3d.pipelines.registration.compute_fpfh_feature(
+                pcd,
+                o3d.geometry.KDTreeSearchParamHybrid(
+                    radius=voxel_size*5,
+                    max_nn=100
+                )
+            )
+            uniqueness = np.mean(np.std(fpfh.data, axis=1))
+            return {
+                f'{name}_feature_uniqueness': uniqueness,
+                f'{name}_feature_dim': fpfh.data.shape[1]
+            }
+        
+        comparison['feature_stats'].update(analyze_features(cloud1, 'cloud1'))
+        comparison['feature_stats'].update(analyze_features(cloud2, 'cloud2'))
+        
+        # 4. Overlap analysis (requires downsampling)
+        cloud1_down = cloud1.voxel_down_sample(voxel_size)
+        cloud2_down = cloud2.voxel_down_sample(voxel_size)
+        
+        # Compute rough overlap using nearest neighbors
+        def estimate_overlap(source, target):
+            dists = source.compute_point_cloud_distance(target)
+            overlap_ratio = np.mean(np.asarray(dists) < voxel_size * 1.5)
+            return overlap_ratio
+        
+        comparison['overlap_analysis'] = {
+            'cloud1_to_cloud2': estimate_overlap(cloud1_down, cloud2_down),
+            'cloud2_to_cloud1': estimate_overlap(cloud2_down, cloud1_down),
+            'avg_overlap': (estimate_overlap(cloud1_down, cloud2_down) + 
+                            estimate_overlap(cloud2_down, cloud1_down)) / 2
+        }
+        
+        # 5. Generate visualizations
+        def create_visualization(pcd1, pcd2, title):
+            pcd1.paint_uniform_color([1, 0, 0])  # Red
+            pcd2.paint_uniform_color([0, 1, 0])  # Green
+            vis = o3d.visualization.Visualizer()
+            vis.create_window()
+            vis.add_geometry(pcd1)
+            vis.add_geometry(pcd2)
+            vis.get_render_option().point_size = 3
+            vis.run()  # User must close window to continue
+            vis.destroy_window()
+        
+        # Save visualization to list
+        comparison['visualizations'].append(
+            create_visualization(cloud1_down, cloud2_down, "Downsampled Comparison")
+        )
+        
+        # 6. Format comparison report
+        def generate_report(comparison):
+            report = "=== POINT CLOUD COMPARISON REPORT ===\n"
+            
+            # Basic stats
+            report += "\n[BASIC STATISTICS]\n"
+            for k, v in comparison['basic_stats'].items():
+                report += f"{k:30}: {v}\n"
+                
+            # Normal stats
+            report += "\n[NORMAL VECTOR ANALYSIS]\n"
+            for k, v in comparison['normal_stats'].items():
+                report += f"{k:30}: {v:.4f}\n"
+                
+            # Feature stats
+            report += "\n[FEATURE QUALITY]\n"
+            for k, v in comparison['feature_stats'].items():
+                report += f"{k:30}: {v:.4f}\n"
+                
+            # Overlap
+            report += "\n[OVERLAP ANALYSIS]\n"
+            for k, v in comparison['overlap_analysis'].items():
+                report += f"{k:30}: {v:.2%}\n"
+                
+            return report
+        
+        comparison['report'] = generate_report(comparison)
+        
+        return comparison
+
+    # Usage example:
+    # result = compare_point_clouds( r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\uglovi\noviSample.xyz",
+    #                               r"C:\Users\Nikola\OneDrive\Desktop\zividSlike\testSample\instance_2_point_cloud.ply")
+    # print(result['report'])
+
+    # To view visualizations (blocks until window is closed)
+    # for vis in result['visualizations']:
+    #     pass  # Visualization windows already shown during creation
 

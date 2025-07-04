@@ -65,16 +65,23 @@ def refine_registration_icp(source, target, initial_transformation, voxel_size, 
         o3d.pipelines.registration.ICPConvergenceCriteria(relative_fitness=1e-6, relative_rmse=1e-6, max_iteration=200) # Stricter criteria
     )
     return result
-def filter_duplicate_waypoints(waypoints: List[np.ndarray], min_distance: float) -> List[np.ndarray]:
+
+def filter_duplicate_waypoints(
+    waypoints: List[np.ndarray], 
+    min_distance: float,
+    object_origin: np.ndarray = np.zeros(3)  # Default origin at [0,0,0]
+) -> List[np.ndarray]:
     """
-    Filters a list of waypoints to remove duplicates based on proximity.
+    Filters a list of 4x4 waypoints to remove duplicates based on XYZ proximity,
+    keeping the waypoint closer to the object origin when duplicates are found.
 
     Args:
-        waypoints: A list of generated waypoints, where each waypoint is a NumPy array [x,y,z,r,p,y].
-        min_distance: The minimum distance (in meters) between two waypoints to be considered unique.
+        waypoints: List of 4x4 transformation matrices.
+        min_distance: Minimum Euclidean distance (meters) between two waypoints.
+        object_origin: XYZ coordinates of the sample object's origin (default [0,0,0]).
 
     Returns:
-        A new list of waypoints with duplicates removed.
+        Filtered list of 4x4 matrices with duplicates removed (keeping closer waypoints).
     """
     if not waypoints:
         return []
@@ -82,20 +89,34 @@ def filter_duplicate_waypoints(waypoints: List[np.ndarray], min_distance: float)
     filtered_waypoints = []
     
     for waypoint in waypoints:
-        is_duplicate = False
-        # Check against the waypoints we've already approved
-        for filtered_wp in filtered_waypoints:
-            # Calculate the Euclidean distance between the XYZ coordinates
-            distance = np.linalg.norm(waypoint[:3] - filtered_wp[:3])
-            
-            if distance < min_distance:
-                is_duplicate = True
-                print(f"Found duplicate waypoint. Distance: {distance:.4f}m < threshold: {min_distance:.4f}m. Discarding.")
-                break # It's a duplicate of this one, no need to check further
+        current_translation = waypoint[:3, 3]
+        current_distance = np.linalg.norm(current_translation - object_origin)
         
-        if not is_duplicate:
-            filtered_waypoints.append(waypoint)
+        # Check against already filtered waypoints
+        duplicate_index = None
+        for i, filtered_wp in enumerate(filtered_waypoints):
+            distance = np.linalg.norm(current_translation - filtered_wp[:3, 3])
+            if distance < min_distance:
+                duplicate_index = i
+                break
+        
+        if duplicate_index is not None:
+            # Compare distances to origin
+            existing_distance = np.linalg.norm(
+                filtered_waypoints[duplicate_index][:3, 3] - object_origin
+            )
             
+            if current_distance < existing_distance:
+                # Replace the existing waypoint with the closer one
+                print(f"Replacing duplicate waypoint (distance to origin: {existing_distance:.4f}m) "
+                      f"with closer one (distance: {current_distance:.4f}m)")
+                filtered_waypoints[duplicate_index] = waypoint
+            else:
+                print(f"Keeping existing waypoint (distance to origin: {existing_distance:.4f}m), "
+                      f"discarding new one (distance: {current_distance:.4f}m)")
+        else:
+            filtered_waypoints.append(waypoint)
+
     return filtered_waypoints
 
 def generate_waypoints(
@@ -350,12 +371,10 @@ def generate_waypoints(
         # Transform object pose from Camera Frame to World Frame
         T_world_object = camera_extrinsics @ T_camera_object
 
-        xyz_world = T_world_object[0:3, 3]
-        rotation_matrix_world = T_world_object[0:3, 0:3]
-        rpy_world = help.rotation_matrix_to_rpy(rotation_matrix_world)
+        waypoints.append(T_world_object)  # Store the full 4x4 pose
+        xyz_world = T_world_object[:3, 3]
+        rpy_world = help.rotation_matrix_to_rpy(T_world_object[:3, :3])
 
-        waypoint = np.concatenate((xyz_world, rpy_world))
-        waypoints.append(waypoint)
 
         print(f"Instance {instance_index}: Waypoint in World Frame: XYZ=[{xyz_world[0]:.3f}, {xyz_world[1]:.3f}, {xyz_world[2]:.3f}], RPY(xyz)=[{rpy_world[0]:.3f}, {rpy_world[1]:.3f}, {rpy_world[2]:.3f}] rad")
         

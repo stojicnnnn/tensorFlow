@@ -1,24 +1,10 @@
-import rerun as rr
 import numpy as np
 import time
-import open3d as o3d
-import cv2 # For loading images (pip install opencv-python)
-import os # For os.path.exists if you use it, though not in current snippet
-import copy 
-import requests
-import matplotlib.pyplot as plt
-from scipy.spatial.transform import Rotation # For RPY conversion (pip install scipy)
-from typing import List, Tuple, Optional # For type hinting
-from dataclasses import dataclass
-import glob
 from xarm.wrapper import XArmAPI
-import pyrealsense2 as rs
 import math 
 from transforms3d import euler
-import glob # We'll use this for finding mask files
 from transforms3d import affines 
 from transforms3d.euler import euler2mat 
-import cv2.aruco as aruco
 
 class Xarm:
     def __init__(self,ip):
@@ -34,7 +20,9 @@ class Xarm:
         self.arm.set_mode(0) # Position control mode
         self.arm.set_state(state=0) # Ready state
         print("xArm Initialized.")
-    def move(self,pose: np.ndarray):
+    def move(self, pose: np.ndarray, speed: int = None):
+        if speed is None:
+            speed = 80
         print(f"Moving robot to pose: {pose}")
         x = pose[0, 3] * 1000
         y = pose[1, 3] * 1000
@@ -50,7 +38,7 @@ class Xarm:
             roll=roll,
             pitch=pitch,
             yaw=yaw,
-            speed=80,
+            speed=speed,
             wait=True,
         )
         time.sleep(1)
@@ -177,5 +165,44 @@ class Xarm:
             arm.set_mode(0) # Set back to position control mode
             arm.set_state(0)
             arm.disconnect()
-            
-        return recorded_poses
+        return recorded_poses       
+    def close_gripper(self):
+        self.arm.close_lite6_gripper()
+    def pick(self,pose: np.ndarray):
+        """
+        Move the robot to a specified pose and close the gripper.
+        
+        Args:
+            pose (np.ndarray): A 4x4 numpy array representing the target pose.
+        """
+        offs_matrix = np.array([
+                [1.0, 0.0, 0.0, 0.0],    # No rotation, X-offset removed
+                [0.0, 1.0, 0.0, 0.0],    # No rotation, Y-offset removed
+                [0.0, 0.0, 1.0, -0.101], # No rotation, Z-offset kept (-0.101 m) 100m da ode dole
+                [0.0, 0.0, 0.0, 1.0]     # Homogeneous row
+                                    ])  
+        approach_pose = pose @ offs_matrix
+        approach_pose = approach_pose.copy()
+        self.move(approach_pose)
+        offs_matrix = np.array([
+                [1.0, 0.0, 0.0, 0.0],    # No rotation, X-offset removed
+                [0.0, 1.0, 0.0, 0.0],    # No rotation, Y-offset removed
+                [0.0, 0.0, 1.0, -0.001], # No rotation, Z-offset kept (-0.101 m) 100m da ode dole
+                [0.0, 0.0, 0.0, 1.0]     # Homogeneous row
+                                    ])
+        target_pose = pose @ offs_matrix
+        target_pose = target_pose.copy()
+        self.move(target_pose,speed=10)
+        self.close_gripper()
+        offs_matrix = np.array([
+                [1.0, 0.0, 0.0, 0.0],    # No rotation, X-offset removed
+                [0.0, 1.0, 0.0, 0.0],    # No rotation, Y-offset removed
+                [0.0, 0.0, 1.0, -0.101], # No rotation, Z-offset kept (-0.101 m) 100m da ode dole
+                [0.0, 0.0, 0.0, 1.0]     # Homogeneous row
+                                    ]) 
+        time.sleep(1)  # Wait for the gripper to close
+        approach_pose = pose @ offs_matrix
+        approach_pose = approach_pose.copy()
+        self.move(approach_pose)  # Move back to the approach pose
+        
+        print("Gripper picked object.")
